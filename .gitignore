@@ -1,0 +1,20 @@
+# Build output
+build/
+iso/
+
+# Tool/cache junk
+*.o
+*.elf
+*.iso
+*.map
+*.log
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Windows ADS artifacts accidentally copied as files
+*:Zone.Identifier
