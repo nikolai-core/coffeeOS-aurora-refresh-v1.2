@@ -40,6 +40,22 @@ static inline int ascii_starts_with(const char *s, const char *prefix) {
     return 1;
 }
 
+static inline int ascii_ends_with(const char *s, const char *suffix) {
+    uint32_t s_len = ascii_strlen(s);
+    uint32_t suffix_len = ascii_strlen(suffix);
+    uint32_t i;
+
+    if (suffix_len > s_len) {
+        return 0;
+    }
+    for (i = 0u; i < suffix_len; i++) {
+        if (s[s_len - suffix_len + i] != suffix[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static inline void ascii_trim_lower_copy(char *dst, uint32_t dst_max_len, const char *src) {
     uint32_t start = 0;
     uint32_t end = ascii_strlen(src);

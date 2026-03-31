@@ -4,6 +4,7 @@
 #include "app_registry.h"
 #include "ascii_util.h"
 #include "desktop.h"
+#include "fat32.h"
 #include "gfx.h"
 #include "icon_assets.h"
 #include "io.h"
@@ -12,6 +13,7 @@
 #include "mouse.h"
 #include "pit.h"
 #include "pmm.h"
+#include "ramdisk.h"
 #include "serial.h"
 #include "speaker.h"
 #include "synth.h"
@@ -1234,6 +1236,48 @@ static int desktop_launch_app(int app_index) {
     return 1;
 }
 
+/* Open one registered app window by its exact title text. */
+int desktop_launch_app_by_title(const char *title) {
+    int i;
+
+    if (title == (const char *)0) {
+        return 0;
+    }
+    for (i = 0; i < app_count; i++) {
+        App *app = app_registry[i];
+
+        if (app != (App *)0 && ascii_streq(app->title, title)) {
+            return desktop_launch_app(i);
+        }
+    }
+    return 0;
+}
+
+/* Update one window title by matching the current title or owning app title. */
+int desktop_set_window_title(const char *old_title, const char *new_title) {
+    uint32_t i;
+
+    if (old_title == (const char *)0 || new_title == (const char *)0) {
+        return 0;
+    }
+    for (i = 0u; i < desktop_window_count; i++) {
+        struct Window *window = desktop_draw_order[i];
+
+        if (window == (struct Window *)0) {
+            continue;
+        }
+        if (ascii_streq(window->title, old_title)
+            || (window->app != (struct App *)0 && window->app->title != (const char *)0
+                && ascii_streq(window->app->title, old_title))) {
+            desktop_copy_string(window->title, (uint32_t)sizeof(window->title), new_title);
+            window->content_dirty = 1;
+            desktop_taskbar_dirty = 1;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Open one launcher icon target by index. */
 static int desktop_open_launcher_icon(int icon_index) {
     if (icon_index < 0 || icon_index >= desktop_launcher_icon_count()) {
@@ -1283,6 +1327,8 @@ static void desktop_system_reboot(void) {
         uint16_t limit;
         uint32_t base;
     } __attribute__((packed)) null_idt = {0u, 0u};
+
+    (void)fat32_sync(0);
 
     for (i = 0; i < 0x10000u; i++) {
         if ((io_in8(0x64u) & 0x02u) == 0u) {
@@ -2656,6 +2702,10 @@ void desktop_run(void) {
         int wheel = 0;
 
         speaker_update();
+        if (pit_take_fs_sync_request()) {
+            (void)fat32_sync(0);
+            (void)ramdisk_sync_backing_store();
+        }
 
         if (mouse_get_state((int *)0, (int *)0, &buttons, &wheel)) {
             mouse_get_pos(&desktop_cursor_x, &desktop_cursor_y);

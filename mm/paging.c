@@ -553,6 +553,7 @@ void paging_init(uint32_t multiboot_info_addr) {
             uint32_t fb_addr = (uint32_t)fb_addr64;
             uint32_t fb_end = fb_addr + (uint32_t)fb_size64;
             map_physical_range_identity(fb_addr, fb_end, PAGING_FLAG_WRITABLE);
+            map_physical_range_kernel_window(fb_addr, fb_end, PAGING_FLAG_WRITABLE);
         }
     }
 

@@ -8,6 +8,10 @@ iso/
 *.iso
 *.map
 *.log
+*.img
+*.vhd
+*.qcow2
+*.vdi
 
 # OS/editor noise
 .DS_Store
@@ -18,3 +22,7 @@ Thumbs.db
 
 # Windows ADS artifacts accidentally copied as files
 *:Zone.Identifier
+
+# Python cache
+__pycache__/
+*.pyc

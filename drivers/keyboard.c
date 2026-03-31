@@ -14,6 +14,7 @@ static volatile uint32_t keyboard_ring_count;
 
 static uint8_t is_shift_down;
 static uint8_t is_caps_lock_on;
+static int kb_ctrl_held;
 
 static const char scancode_normal[128] = {
     0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
@@ -70,6 +71,7 @@ void keyboard_init(void) {
 
     is_shift_down = 0u;
     is_caps_lock_on = 0u;
+    kb_ctrl_held = 0;
 
     mask = io_in8((uint16_t)PIC_MASTER_DATA_PORT);
     mask &= (uint8_t)~(1u << 1);
@@ -78,6 +80,26 @@ void keyboard_init(void) {
 
 void keyboard_handle_irq(void) {
     uint8_t scancode = io_in8((uint16_t)PS2_DATA_PORT);
+
+    if (scancode == 0x1Du) {
+        kb_ctrl_held = 1;
+        return;
+    }
+
+    if (scancode == 0x9Du) {
+        kb_ctrl_held = 0;
+        return;
+    }
+
+    if (scancode == 0x3Fu) {
+        keyboard_ring_push((char)KEY_F5);
+        return;
+    }
+
+    if (scancode == 0x53u) {
+        keyboard_ring_push((char)KEY_DELETE);
+        return;
+    }
 
     if (scancode == 0x2Au || scancode == 0x36u) {
         is_shift_down = 1u;
@@ -115,4 +137,8 @@ void keyboard_handle_irq(void) {
             keyboard_ring_push(c);
         }
     }
+}
+
+int keyboard_ctrl_held(void) {
+    return kb_ctrl_held;
 }

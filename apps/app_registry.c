@@ -5,6 +5,7 @@ int app_count;
 
 extern App hello_app;
 extern App calc_app;
+extern App filemanager_app;
 extern App notepad_app;
 extern App paint_app;
 extern App mixer_app;
@@ -27,6 +28,7 @@ void app_registry_init(void) {
 
     app_registry_add(&hello_app);
     app_registry_add(&calc_app);
+    app_registry_add(&filemanager_app);
     app_registry_add(&notepad_app);
     app_registry_add(&paint_app);
     app_registry_add(&mixer_app);

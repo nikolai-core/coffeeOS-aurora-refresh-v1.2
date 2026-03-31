@@ -6,7 +6,9 @@
 #include "format.h"
 #include "gfx.h"
 #include "multiboot.h"
+#include "paging.h"
 #include "pit.h"
+#include "vmm.h"
 
 #define FONT_W 8u
 #define FONT_H 16u
@@ -15,6 +17,7 @@
 #define MAX_BACKBUFFER_WIDTH (MAX_COLS * FONT_W)
 #define MAX_BACKBUFFER_HEIGHT (MAX_ROWS * FONT_H)
 #define MAX_BACKBUFFER_BYTES (MAX_BACKBUFFER_WIDTH * MAX_BACKBUFFER_HEIGHT * 4u)
+#define FRAMEBUFFER_VIRT_BASE 0xE0000000u
 
 static uint8_t *framebuffer_base;
 static uint32_t framebuffer_pitch_bytes;
@@ -886,6 +889,11 @@ void gfx_set_output_target(int target) {
 
 void gfx_init(uint32_t multiboot_info_addr) {
     struct MultibootInfo *mbi = (struct MultibootInfo *)multiboot_info_addr;
+    uint32_t fb_phys;
+    uint32_t fb_map_start;
+    uint32_t fb_map_end;
+    uint32_t fb_map_size;
+    uint32_t fb_map_off;
     uint32_t i;
 
     if ((mbi->flags & MULTIBOOT_INFO_FRAMEBUFFER_INFO) == 0u) {
@@ -894,7 +902,7 @@ void gfx_init(uint32_t multiboot_info_addr) {
         }
     }
 
-    framebuffer_base = (uint8_t *)(uintptr_t)mbi->framebuffer_addr;
+    fb_phys = (uint32_t)mbi->framebuffer_addr;
     framebuffer_pitch_bytes = mbi->framebuffer_pitch;
     framebuffer_width_px = mbi->framebuffer_width;
     framebuffer_height_px = mbi->framebuffer_height;
@@ -902,6 +910,21 @@ void gfx_init(uint32_t multiboot_info_addr) {
     framebuffer_bytes_per_pixel = framebuffer_bits_per_pixel / 8u;
     framebuffer_backbuffer_bytes = framebuffer_pitch_bytes * framebuffer_height_px;
     dirty_region_valid = 0u;
+
+    fb_map_start = fb_phys & 0xFFFFF000u;
+    fb_map_end = (fb_phys + framebuffer_backbuffer_bytes + PAGE_SIZE - 1u) & 0xFFFFF000u;
+    fb_map_size = fb_map_end - fb_map_start;
+    fb_map_off = fb_phys - fb_map_start;
+
+    for (i = 0u; i < fb_map_size; i += PAGE_SIZE) {
+        if (!vmm_map_page(FRAMEBUFFER_VIRT_BASE + i, fb_map_start + i,
+                          VMM_FLAG_PRESENT | VMM_FLAG_WRITE)) {
+            for (;;) {
+                __asm__ volatile ("cli; hlt");
+            }
+        }
+    }
+    framebuffer_base = (uint8_t *)(uintptr_t)(FRAMEBUFFER_VIRT_BASE + fb_map_off);
 
     if ((framebuffer_bits_per_pixel != 24u && framebuffer_bits_per_pixel != 32u) || framebuffer_base == 0) {
         for (;;) {

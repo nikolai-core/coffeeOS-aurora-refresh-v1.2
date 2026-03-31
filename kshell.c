@@ -2,16 +2,20 @@
 
 #include "ascii_util.h"
 #include "desktop.h"
+#include "fat32.h"
 #include "gfx.h"
 #include "io.h"
 #include "keyboard.h"
 #include "kshell.h"
 #include "mouse.h"
+#include "notepad_app.h"
 #include "pmm.h"
 #include "pit.h"
+#include "ramdisk.h"
 #include "serial.h"
 #include "synth.h"
 #include "userland.h"
+#include "vfs.h"
 #include "x86_cpu.h"
 
 #define KSHELL_HISTORY_SIZE 8u
@@ -22,6 +26,11 @@
 #define REPEAT_LIMIT 10u
 #define HEXDUMP_LIMIT 256u
 #define COLOR_NAME_COUNT 16u
+#define LS_NAME_WIDTH 24u
+#define LS_TYPE_WIDTH 8u
+#define LS_SIZE_WIDTH 12u
+#define CAT_LIMIT 4096u
+#define COPY_LIMIT (64u * 1024u)
 
 struct CommandInfo {
     const char *name;
@@ -51,6 +60,23 @@ static const struct CommandInfo kshell_commands[] = {
     {"userspace", "Load and run the ring 3 userland shell"},
     {"hexdump [addr] [len]", "Dump memory bytes in hex and ASCII"},
     {"cpuinfo, cpu info", "Show the CPU brand string"},
+    {"ls [path]", "List directory contents"},
+    {"cat [path]", "Print file contents"},
+    {"write [path] [text]", "Create or overwrite a text file"},
+    {"mkdir [path]", "Create a directory"},
+    {"rm [path]", "Delete one file"},
+    {"rmdir [path]", "Delete one empty directory"},
+    {"cp [src] [dst]", "Copy one file up to 64KB"},
+    {"mv [src] [dst]", "Rename or move one file"},
+    {"stat [path]", "Show file metadata"},
+    {"df", "Show mounted ramdisk usage"},
+    {"touch [path]", "Create an empty file if missing"},
+    {"edit [path]", "Open a file in Notepad"},
+    {"pwd", "Print the current working directory"},
+    {"cd [path]", "Change the current working directory"},
+    {"history save", "Write history to /history.txt"},
+    {"history load", "Load history from /history.txt"},
+    {"sync", "Flush filesystem cache to disk"},
     {"secret", "Print the hidden ASCII art"},
     {"credits", "Show project credits"},
     {"reboot", "Reset the machine"},
@@ -68,6 +94,11 @@ static char history_entries[KSHELL_HISTORY_SIZE][KSHELL_LINE_MAX];
 static uint32_t history_count;
 static uint32_t history_next;
 static char prompt_text[KSHELL_PROMPT_MAX] = "coffeeos> ";
+static char cwd[VFS_MAX_PATH] = "/";
+static char kshell_cat_buffer[CAT_LIMIT + 1u];
+static uint8_t kshell_copy_buffer[COPY_LIMIT];
+
+static void print_spaces(uint32_t count);
 
 static void print(const char *s) {
     gfx_print(s);
@@ -124,6 +155,157 @@ static void copy_string(char *dst, uint32_t dst_max_len, const char *src) {
     }
 
     dst[i] = '\0';
+}
+
+/* Print one signed integer in decimal for filesystem status output. */
+static void write_i32(int32_t value) {
+    if (value < 0) {
+        putc_out('-');
+        write_u32((uint32_t)(-value));
+        return;
+    }
+    write_u32((uint32_t)value);
+}
+
+/* Print one VFS error string with a trailing newline. */
+static void print_vfs_error(int err) {
+    print("Error: ");
+    print(vfs_strerror(err));
+    print("\n");
+}
+
+/* Resolve one shell path against the current working directory. */
+static int kshell_resolve_path(const char *input, char *out, uint32_t out_max) {
+    uint32_t i = 0u;
+    uint32_t j = 0u;
+
+    if (input == (const char *)0 || input[0] == '\0' || out_max == 0u) {
+        return VFS_ERR_BADPATH;
+    }
+
+    if (input[0] == '/') {
+        copy_string(out, out_max, input);
+        return VFS_OK;
+    }
+
+    if (cwd[0] == '/' && cwd[1] == '\0') {
+        out[j++] = '/';
+    } else {
+        while (cwd[i] != '\0' && j + 1u < out_max) {
+            out[j++] = cwd[i++];
+        }
+        if (j + 1u >= out_max) {
+            return VFS_ERR_TOOLONG;
+        }
+        out[j++] = '/';
+    }
+
+    i = 0u;
+    while (input[i] != '\0' && j + 1u < out_max) {
+        out[j++] = input[i++];
+    }
+    if (input[i] != '\0') {
+        return VFS_ERR_TOOLONG;
+    }
+    out[j] = '\0';
+    return VFS_OK;
+}
+
+/* Split one path into a parent path and final leaf name. */
+static int kshell_split_parent(const char *path, char *parent, char *leaf) {
+    uint32_t len;
+    uint32_t i;
+
+    if (path == (const char *)0 || path[0] != '/') {
+        return VFS_ERR_BADPATH;
+    }
+    len = ascii_strlen(path);
+    while (len > 1u && path[len - 1u] == '/') {
+        len--;
+    }
+    if (len <= 1u) {
+        return VFS_ERR_BADPATH;
+    }
+
+    i = len;
+    while (i > 0u && path[i - 1u] != '/') {
+        i--;
+    }
+    if (i == 0u || i >= len) {
+        return VFS_ERR_BADPATH;
+    }
+
+    copy_string(leaf, VFS_NAME_MAX, path + i);
+    if (i == 1u) {
+        parent[0] = '/';
+        parent[1] = '\0';
+    } else {
+        uint32_t p;
+
+        for (p = 0u; p < i && p + 1u < VFS_MAX_PATH; p++) {
+            parent[p] = path[p];
+        }
+        parent[i] = '\0';
+    }
+    return VFS_OK;
+}
+
+/* Move one absolute path to its parent directory. */
+static void kshell_path_up(const char *path, char *out, uint32_t out_max) {
+    char parent[VFS_MAX_PATH];
+    char leaf[VFS_NAME_MAX];
+
+    if (ascii_streq(path, "/")) {
+        copy_string(out, out_max, "/");
+        return;
+    }
+    if (kshell_split_parent(path, parent, leaf) == VFS_OK) {
+        copy_string(out, out_max, parent);
+        return;
+    }
+    copy_string(out, out_max, "/");
+}
+
+/* Print a fixed-width ls table border. */
+static void print_ls_border(void) {
+    uint32_t i;
+
+    putc_out('+');
+    for (i = 0; i < LS_NAME_WIDTH + 2u; i++) putc_out('-');
+    putc_out('+');
+    for (i = 0; i < LS_TYPE_WIDTH + 2u; i++) putc_out('-');
+    putc_out('+');
+    for (i = 0; i < LS_SIZE_WIDTH + 2u; i++) putc_out('-');
+    print("+\n");
+}
+
+/* Print one fixed-width ls table row. */
+static void print_ls_row(const char *name, const char *type, uint32_t size) {
+    uint32_t name_len = ascii_strlen(name);
+    uint32_t type_len = ascii_strlen(type);
+    char size_text[11];
+    uint32_t size_len = 0u;
+    uint32_t value = size;
+
+    if (value == 0u) {
+        size_text[size_len++] = '0';
+    } else {
+        while (value != 0u && size_len < sizeof(size_text)) {
+            size_text[size_len++] = (char)('0' + (value % 10u));
+            value /= 10u;
+        }
+    }
+
+    print("| ");
+    print(name);
+    if (name_len < LS_NAME_WIDTH) print_spaces(LS_NAME_WIDTH - name_len);
+    print(" | ");
+    print(type);
+    if (type_len < LS_TYPE_WIDTH) print_spaces(LS_TYPE_WIDTH - type_len);
+    print(" | ");
+    if (size_len < LS_SIZE_WIDTH) print_spaces(LS_SIZE_WIDTH - size_len);
+    while (size_len > 0u) putc_out(size_text[--size_len]);
+    print(" |\n");
 }
 
 static int split_once(const char *src, char *first, uint32_t first_max_len,
@@ -220,9 +402,67 @@ static void history_add(const char *line) {
     }
 }
 
-static void cmd_history(void) {
+static void cmd_history(const char *trimmed) {
+    const char *arg = trimmed + 7;
     uint32_t start;
     uint32_t i;
+
+    while (*arg == ' ') {
+        arg++;
+    }
+
+    if (ascii_streq(arg, "save")) {
+        char buffer[1024];
+        uint32_t pos = 0u;
+
+        start = (history_next + KSHELL_HISTORY_SIZE - history_count) % KSHELL_HISTORY_SIZE;
+        for (i = 0u; i < history_count; i++) {
+            uint32_t index = (start + i) % KSHELL_HISTORY_SIZE;
+            uint32_t j = 0u;
+
+            while (history_entries[index][j] != '\0' && pos + 2u < sizeof(buffer)) {
+                buffer[pos++] = history_entries[index][j++];
+            }
+            if (pos + 1u < sizeof(buffer)) {
+                buffer[pos++] = '\n';
+            }
+        }
+        serial_print("[kshell] history save: calling vfs_write_file\n");
+        if (vfs_write_file("/history.txt", buffer, pos) != 0) {
+            serial_print("[kshell] history save: vfs_write_file returned\n");
+            print("Failed to save history.\n");
+        } else {
+            serial_print("[kshell] history save: vfs_write_file returned\n");
+            print("History saved to /history.txt\n");
+        }
+        return;
+    }
+
+    if (ascii_streq(arg, "load")) {
+        char buffer[1024];
+        uint32_t len = 0u;
+        uint32_t line_start = 0u;
+        serial_print("[kshell] history load: calling vfs_read_file\n");
+        int r = vfs_read_file("/history.txt", buffer, sizeof(buffer) - 1u, &len);
+        serial_print("[kshell] history load: vfs_read_file returned\n");
+
+        if (r != VFS_OK) {
+            print_vfs_error(r);
+            return;
+        }
+        buffer[len] = '\0';
+        history_count = 0u;
+        history_next = 0u;
+        for (i = 0u; i <= len; i++) {
+            if (buffer[i] == '\n' || buffer[i] == '\0') {
+                buffer[i] = '\0';
+                history_add(buffer + line_start);
+                line_start = i + 1u;
+            }
+        }
+        print("History loaded from /history.txt\n");
+        return;
+    }
 
     if (history_count == 0u) {
         print("No commands in history.\n");
@@ -230,13 +470,433 @@ static void cmd_history(void) {
     }
 
     start = (history_next + KSHELL_HISTORY_SIZE - history_count) % KSHELL_HISTORY_SIZE;
-    for (i = 0; i < history_count; i++) {
+    for (i = 0u; i < history_count; i++) {
         uint32_t index = (start + i) % KSHELL_HISTORY_SIZE;
         write_u32(i + 1u);
         print(". ");
         print(history_entries[index]);
         print("\n");
     }
+}
+
+/* List one directory through the VFS layer. */
+static void cmd_ls(const char *trimmed) {
+    const char *arg = trimmed + 2;
+    char resolved[VFS_MAX_PATH];
+    /* static to avoid stack overflow — not reentrant */
+    static VfsDirEntry entries[64];
+    int count;
+    int i;
+    int r;
+
+    while (*arg == ' ') {
+        arg++;
+    }
+    if (*arg == '\0') {
+        copy_string(resolved, sizeof(resolved), "/");
+    } else if (kshell_resolve_path(arg, resolved, sizeof(resolved)) != VFS_OK) {
+        print("Usage: ls [path]\n");
+        return;
+    }
+
+    serial_print("[kshell] ls: calling vfs_listdir\n");
+    count = vfs_listdir(resolved, entries, 64);
+    serial_print("[kshell] ls: vfs_listdir returned\n");
+    if (count < 0) {
+        print_vfs_error(count);
+        return;
+    }
+
+    print_ls_border();
+    print_ls_row("Name", "Type", 0u);
+    print_ls_border();
+    for (i = 0; i < count; i++) {
+        print_ls_row(entries[i].name, entries[i].type == VFS_TYPE_DIR ? "DIR" : "FILE", entries[i].size);
+    }
+    if (count == 0) {
+        print_ls_row("(empty)", "-", 0u);
+    }
+    print_ls_border();
+    r = count;
+    (void)r;
+}
+
+/* Print up to 4096 bytes from one text file. */
+static void cmd_cat(const char *trimmed) {
+    const char *arg = trimmed + 3;
+    char resolved[VFS_MAX_PATH];
+    uint32_t len = 0u;
+    int r;
+
+    while (*arg == ' ') {
+        arg++;
+    }
+    if (*arg == '\0' || kshell_resolve_path(arg, resolved, sizeof(resolved)) != VFS_OK) {
+        print("Usage: cat [path]\n");
+        return;
+    }
+
+    serial_print("[kshell] cat: calling vfs_read_file\n");
+    r = vfs_read_file(resolved, kshell_cat_buffer, CAT_LIMIT, &len);
+    serial_print("[kshell] cat: vfs_read_file returned\n");
+    if (r != VFS_OK) {
+        print_vfs_error(r);
+        return;
+    }
+    kshell_cat_buffer[len] = '\0';
+    print(kshell_cat_buffer);
+    if (len == CAT_LIMIT) {
+        VfsDirEntry st;
+
+        if (vfs_stat(resolved, &st) == VFS_OK && st.size > CAT_LIMIT) {
+            print("\n... (truncated)\n");
+            return;
+        }
+    }
+    if (len == 0u || kshell_cat_buffer[len - 1u] != '\n') {
+        print("\n");
+    }
+}
+
+/* Create or overwrite one file with the remaining command text. */
+static void cmd_write_file_text(const char *trimmed) {
+    char args[KSHELL_LINE_MAX];
+    char path_arg[VFS_MAX_PATH];
+    char text[KSHELL_LINE_MAX];
+    char resolved[VFS_MAX_PATH];
+    int r;
+
+    copy_string(args, sizeof(args), trimmed + 5);
+    if (!split_once(args, path_arg, sizeof(path_arg), text, sizeof(text))) {
+        print("Usage: write [path] [text]\n");
+        return;
+    }
+    if (kshell_resolve_path(path_arg, resolved, sizeof(resolved)) != VFS_OK) {
+        print_vfs_error(VFS_ERR_BADPATH);
+        return;
+    }
+    serial_print("[kshell] write: calling vfs_write_file\n");
+    r = vfs_write_file(resolved, text, ascii_strlen(text));
+    serial_print("[kshell] write: vfs_write_file returned\n");
+    if (r != VFS_OK) {
+        print_vfs_error(r);
+        return;
+    }
+    print("Wrote file.\n");
+}
+
+/* Create one directory at the resolved shell path. */
+static void cmd_mkdir_fs(const char *trimmed) {
+    const char *arg = trimmed + 5;
+    char resolved[VFS_MAX_PATH];
+    int r;
+
+    while (*arg == ' ') arg++;
+    if (*arg == '\0' || kshell_resolve_path(arg, resolved, sizeof(resolved)) != VFS_OK) {
+        print("Usage: mkdir [path]\n");
+        return;
+    }
+    serial_print("[kshell] mkdir: calling vfs_mkdir\n");
+    r = vfs_mkdir(resolved);
+    serial_print("[kshell] mkdir: vfs_mkdir returned\n");
+    if (r != VFS_OK) {
+        print_vfs_error(r);
+        return;
+    }
+    print("Directory created.\n");
+}
+
+/* Delete one file while refusing directory targets. */
+static void cmd_rm(const char *trimmed) {
+    const char *arg = trimmed + 2;
+    char resolved[VFS_MAX_PATH];
+    VfsDirEntry st;
+    int r;
+
+    while (*arg == ' ') arg++;
+    if (*arg == '\0' || kshell_resolve_path(arg, resolved, sizeof(resolved)) != VFS_OK) {
+        print("Usage: rm [path]\n");
+        return;
+    }
+    serial_print("[kshell] rm: calling vfs_stat\n");
+    r = vfs_stat(resolved, &st);
+    serial_print("[kshell] rm: vfs_stat returned\n");
+    if (r != VFS_OK) {
+        print_vfs_error(r);
+        return;
+    }
+    if (st.type == VFS_TYPE_DIR) {
+        print("Refusing to delete a directory with rm. Use rmdir.\n");
+        return;
+    }
+    serial_print("[kshell] rm: calling vfs_delete\n");
+    r = vfs_delete(resolved);
+    serial_print("[kshell] rm: vfs_delete returned\n");
+    if (r != VFS_OK) {
+        print_vfs_error(r);
+        return;
+    }
+    print("File deleted.\n");
+}
+
+/* Delete one empty directory through the VFS layer. */
+static void cmd_rmdir_fs(const char *trimmed) {
+    const char *arg = trimmed + 5;
+    char resolved[VFS_MAX_PATH];
+    VfsDirEntry st;
+    int r;
+
+    while (*arg == ' ') arg++;
+    if (*arg == '\0' || kshell_resolve_path(arg, resolved, sizeof(resolved)) != VFS_OK) {
+        print("Usage: rmdir [path]\n");
+        return;
+    }
+    serial_print("[kshell] rmdir: calling vfs_stat\n");
+    r = vfs_stat(resolved, &st);
+    serial_print("[kshell] rmdir: vfs_stat returned\n");
+    if (r != VFS_OK) {
+        print_vfs_error(r);
+        return;
+    }
+    if (st.type != VFS_TYPE_DIR) {
+        print("Target is not a directory.\n");
+        return;
+    }
+    serial_print("[kshell] rmdir: calling vfs_delete\n");
+    r = vfs_delete(resolved);
+    serial_print("[kshell] rmdir: vfs_delete returned\n");
+    if (r != VFS_OK) {
+        print_vfs_error(r);
+        return;
+    }
+    print("Directory deleted.\n");
+}
+
+/* Copy one file into another path using a fixed 64KB transfer buffer. */
+static void cmd_cp(const char *trimmed) {
+    char args[KSHELL_LINE_MAX];
+    char src_arg[VFS_MAX_PATH];
+    char dst_arg[VFS_MAX_PATH];
+    char src[VFS_MAX_PATH];
+    char dst[VFS_MAX_PATH];
+    uint32_t len = 0u;
+    int r;
+
+    copy_string(args, sizeof(args), trimmed + 2);
+    if (!split_once(args, src_arg, sizeof(src_arg), dst_arg, sizeof(dst_arg)) || dst_arg[0] == '\0') {
+        print("Usage: cp [src] [dst]\n");
+        return;
+    }
+    if (kshell_resolve_path(src_arg, src, sizeof(src)) != VFS_OK
+        || kshell_resolve_path(dst_arg, dst, sizeof(dst)) != VFS_OK) {
+        print_vfs_error(VFS_ERR_BADPATH);
+        return;
+    }
+    serial_print("[kshell] cp: calling vfs_read_file\n");
+    r = vfs_read_file(src, kshell_copy_buffer, COPY_LIMIT, &len);
+    serial_print("[kshell] cp: vfs_read_file returned\n");
+    if (r != VFS_OK) {
+        print_vfs_error(r);
+        return;
+    }
+    {
+        VfsDirEntry st;
+
+        if (vfs_stat(src, &st) == VFS_OK && st.size > COPY_LIMIT) {
+            print("Error: file too large for cp buffer.\n");
+            return;
+        }
+    }
+    serial_print("[kshell] cp: calling vfs_write_file\n");
+    r = vfs_write_file(dst, kshell_copy_buffer, len);
+    serial_print("[kshell] cp: vfs_write_file returned\n");
+    if (r != VFS_OK) {
+        print_vfs_error(r);
+        return;
+    }
+    print("File copied.\n");
+}
+
+/* Rename one file path through the VFS layer. */
+static void cmd_mv(const char *trimmed) {
+    char args[KSHELL_LINE_MAX];
+    char src_arg[VFS_MAX_PATH];
+    char dst_arg[VFS_MAX_PATH];
+    char src[VFS_MAX_PATH];
+    char dst[VFS_MAX_PATH];
+    int r;
+
+    copy_string(args, sizeof(args), trimmed + 2);
+    if (!split_once(args, src_arg, sizeof(src_arg), dst_arg, sizeof(dst_arg)) || dst_arg[0] == '\0') {
+        print("Usage: mv [src] [dst]\n");
+        return;
+    }
+    if (kshell_resolve_path(src_arg, src, sizeof(src)) != VFS_OK
+        || kshell_resolve_path(dst_arg, dst, sizeof(dst)) != VFS_OK) {
+        print_vfs_error(VFS_ERR_BADPATH);
+        return;
+    }
+    serial_print("[kshell] mv: calling vfs_rename\n");
+    r = vfs_rename(src, dst);
+    serial_print("[kshell] mv: vfs_rename returned\n");
+    if (r != VFS_OK) {
+        print_vfs_error(r);
+        return;
+    }
+    print("File moved.\n");
+}
+
+/* Print one file or directory metadata record. */
+static void cmd_stat_fs(const char *trimmed) {
+    const char *arg = trimmed + 4;
+    char resolved[VFS_MAX_PATH];
+    VfsDirEntry st;
+    int r;
+
+    while (*arg == ' ') arg++;
+    if (*arg == '\0' || kshell_resolve_path(arg, resolved, sizeof(resolved)) != VFS_OK) {
+        print("Usage: stat [path]\n");
+        return;
+    }
+    serial_print("[kshell] stat: calling vfs_stat\n");
+    r = vfs_stat(resolved, &st);
+    serial_print("[kshell] stat: vfs_stat returned\n");
+    if (r != VFS_OK) {
+        print_vfs_error(r);
+        return;
+    }
+
+    print("Name: ");
+    print(st.name);
+    print("\nType: ");
+    print(st.type == VFS_TYPE_DIR ? "DIR" : "FILE");
+    print("\nSize: ");
+    write_u32(st.size);
+    print("\nStart cluster: ");
+    write_u32(st.cluster);
+    print("\n");
+}
+
+/* Print total, used, and free space for the mounted ramdisk volume. */
+static void cmd_df(void) {
+    Fat32Volume *vol = fat32_get_volume(0);
+    uint32_t total_blocks;
+    uint32_t free_blocks;
+    uint32_t used_blocks;
+    uint32_t used_percent;
+
+    if (vol == (Fat32Volume *)0 || vol->dev == (BlockDevice *)0) {
+        print("Filesystem not mounted.\n");
+        return;
+    }
+    total_blocks = vol->dev->block_count;
+    free_blocks = vol->free_clusters * vol->sectors_per_cluster;
+    if (free_blocks > total_blocks) {
+        free_blocks = total_blocks;
+    }
+    used_blocks = total_blocks - free_blocks;
+    used_percent = total_blocks == 0u ? 0u : (used_blocks * 100u) / total_blocks;
+
+    print("Total blocks: ");
+    write_u32(total_blocks);
+    print("\nUsed blocks: ");
+    write_u32(used_blocks);
+    print("\nFree blocks: ");
+    write_u32(free_blocks);
+    print("\nUsed percent: ");
+    write_u32(used_percent);
+    print("%\n");
+}
+
+/* Create one empty file if it does not already exist. */
+static void cmd_touch(const char *trimmed) {
+    const char *arg = trimmed + 5;
+    char resolved[VFS_MAX_PATH];
+    int r;
+
+    while (*arg == ' ') arg++;
+    if (*arg == '\0' || kshell_resolve_path(arg, resolved, sizeof(resolved)) != VFS_OK) {
+        print("Usage: touch [path]\n");
+        return;
+    }
+    serial_print("[kshell] touch: calling vfs_exists\n");
+    if (vfs_exists(resolved)) {
+        serial_print("[kshell] touch: vfs_exists returned\n");
+        return;
+    }
+    serial_print("[kshell] touch: vfs_exists returned\n");
+    serial_print("[kshell] touch: calling vfs_write_file\n");
+    r = vfs_write_file(resolved, "", 0u);
+    serial_print("[kshell] touch: vfs_write_file returned\n");
+    if (r != VFS_OK) {
+        print_vfs_error(r);
+        return;
+    }
+}
+
+/* Open one file in Notepad, creating it first when missing. */
+static void cmd_edit(const char *trimmed) {
+    const char *arg = trimmed + 4;
+    char resolved[VFS_MAX_PATH];
+    int r;
+
+    while (*arg == ' ') arg++;
+    if (*arg == '\0' || kshell_resolve_path(arg, resolved, sizeof(resolved)) != VFS_OK) {
+        print("Usage: edit [path]\n");
+        return;
+    }
+
+    serial_print("[kshell] edit: calling vfs_exists\n");
+    r = vfs_exists(resolved);
+    serial_print("[kshell] edit: vfs_exists returned\n");
+    if (!r) {
+        serial_print("[kshell] edit: calling vfs_write_file\n");
+        r = vfs_write_file(resolved, "", 0u);
+        serial_print("[kshell] edit: vfs_write_file returned\n");
+        if (r != VFS_OK) {
+            print_vfs_error(r);
+            return;
+        }
+    }
+
+    notepad_open_file(resolved);
+    (void)desktop_launch_app_by_title("Notepad");
+}
+
+/* Print the current shell working directory. */
+static void cmd_pwd(void) {
+    print(cwd);
+    print("\n");
+}
+
+/* Change the current shell working directory. */
+static void cmd_cd(const char *trimmed) {
+    const char *arg = trimmed + 2;
+    char resolved[VFS_MAX_PATH];
+    VfsDirEntry st;
+    int r;
+
+    while (*arg == ' ') arg++;
+    if (*arg == '\0') {
+        copy_string(cwd, sizeof(cwd), "/");
+        return;
+    }
+    if (kshell_resolve_path(arg, resolved, sizeof(resolved)) != VFS_OK) {
+        print_vfs_error(VFS_ERR_BADPATH);
+        return;
+    }
+    serial_print("[kshell] cd: calling vfs_stat\n");
+    r = vfs_stat(resolved, &st);
+    serial_print("[kshell] cd: vfs_stat returned\n");
+    if (r != VFS_OK) {
+        print_vfs_error(r);
+        return;
+    }
+    if (st.type != VFS_TYPE_DIR) {
+        print("Target is not a directory.\n");
+        return;
+    }
+    copy_string(cwd, sizeof(cwd), resolved);
 }
 
 static void cmd_echo(const char *trimmed) {
@@ -567,6 +1227,16 @@ static void cmd_hexdump(const char *trimmed) {
     }
 }
 
+/* Flush the mounted filesystem and persist the ramdisk backing image when needed. */
+static void cmd_sync(void) {
+    if (fat32_sync(0) != 0) {
+        print("Filesystem sync failed.\n");
+        return;
+    }
+    (void)ramdisk_sync_backing_store();
+    print("Filesystem synced.\n");
+}
+
 static void cmd_reboot(void) {
     uint32_t i;
     struct {
@@ -575,6 +1245,9 @@ static void cmd_reboot(void) {
     } __attribute__((packed)) null_idt = {0u, 0u};
 
     print("Rebooting...\n");
+    (void)fat32_sync(0);
+    (void)ramdisk_sync_backing_store();
+    serial_print("[reboot] filesystem synced\n");
 
     for (i = 0; i < 0x10000u; i++) {
         if ((io_in8(0x64u) & 0x02u) == 0u) {
@@ -648,8 +1321,8 @@ static void kshell_dispatch_normalized(const char *trimmed, const char *normaliz
         return;
     }
 
-    if (ascii_streq(normalized, "history")) {
-        cmd_history();
+    if (ascii_streq(normalized, "history") || ascii_starts_with(normalized, "history ")) {
+        cmd_history(trimmed);
         return;
     }
 
@@ -783,6 +1456,81 @@ static void kshell_dispatch_normalized(const char *trimmed, const char *normaliz
         return;
     }
 
+    if (ascii_streq(normalized, "sync")) {
+        cmd_sync();
+        return;
+    }
+
+    if (ascii_streq(normalized, "ls") || ascii_starts_with(normalized, "ls ")) {
+        cmd_ls(trimmed);
+        return;
+    }
+
+    if (ascii_streq(normalized, "cat") || ascii_starts_with(normalized, "cat ")) {
+        cmd_cat(trimmed);
+        return;
+    }
+
+    if (ascii_streq(normalized, "write") || ascii_starts_with(normalized, "write ")) {
+        cmd_write_file_text(trimmed);
+        return;
+    }
+
+    if (ascii_streq(normalized, "mkdir") || ascii_starts_with(normalized, "mkdir ")) {
+        cmd_mkdir_fs(trimmed);
+        return;
+    }
+
+    if (ascii_streq(normalized, "rm") || ascii_starts_with(normalized, "rm ")) {
+        cmd_rm(trimmed);
+        return;
+    }
+
+    if (ascii_streq(normalized, "rmdir") || ascii_starts_with(normalized, "rmdir ")) {
+        cmd_rmdir_fs(trimmed);
+        return;
+    }
+
+    if (ascii_streq(normalized, "cp") || ascii_starts_with(normalized, "cp ")) {
+        cmd_cp(trimmed);
+        return;
+    }
+
+    if (ascii_streq(normalized, "mv") || ascii_starts_with(normalized, "mv ")) {
+        cmd_mv(trimmed);
+        return;
+    }
+
+    if (ascii_streq(normalized, "stat") || ascii_starts_with(normalized, "stat ")) {
+        cmd_stat_fs(trimmed);
+        return;
+    }
+
+    if (ascii_streq(normalized, "df")) {
+        cmd_df();
+        return;
+    }
+
+    if (ascii_streq(normalized, "touch") || ascii_starts_with(normalized, "touch ")) {
+        cmd_touch(trimmed);
+        return;
+    }
+
+    if (ascii_streq(normalized, "edit") || ascii_starts_with(normalized, "edit ")) {
+        cmd_edit(trimmed);
+        return;
+    }
+
+    if (ascii_streq(normalized, "pwd")) {
+        cmd_pwd();
+        return;
+    }
+
+    if (ascii_streq(normalized, "cd") || ascii_starts_with(normalized, "cd ")) {
+        cmd_cd(trimmed);
+        return;
+    }
+
     if (ascii_streq(normalized, "cpuinfo") || ascii_streq(normalized, "cpu info")) {
         cmd_cpu_info();
         return;
@@ -825,6 +1573,10 @@ void kshell_run(void) {
     print_prompt();
 
     for (;;) {
+        if (pit_take_fs_sync_request()) {
+            (void)fat32_sync(0);
+            (void)ramdisk_sync_backing_store();
+        }
         if (!keyboard_read_char(&c)) {
             continue;
         }

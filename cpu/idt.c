@@ -11,8 +11,11 @@
 #include "syscall_numbers.h"
 #include "synth.h"
 #include "userland.h"
+#include "vfs.h"
 #include "vmm.h"
 #include "vm.h"
+
+#define AUTO_SYNC 1
 
 struct __attribute__((packed)) IDTEntry {
     uint16_t base_low;
@@ -107,6 +110,7 @@ extern void isr128(void);
 
 static struct IDTEntry idt[256];
 static struct IDTPointer idt_ptr;
+static uint32_t irq_fs_sync_countdown;
 
 #define IDT_FLAG_INTERRUPT_GATE 0x8E
 #define IDT_FLAG_USER_INTERRUPT_GATE 0xEE
@@ -157,6 +161,34 @@ static void pic_remap(uint8_t offset1, uint8_t offset2) {
 
     io_out8(PIC1_DATA, mask1);
     io_out8(PIC2_DATA, mask2);
+}
+
+/* Return non-zero when one user pointer range is accessible for this syscall. */
+static int syscall_user_range_ok(uint32_t *pd, uint32_t addr, uint32_t len, int write) {
+    if (len == 0u) {
+        return 1;
+    }
+    return vmm_user_range_accessible(pd, addr, len, write);
+}
+
+/* Copy one NUL-terminated user string into a fixed kernel buffer. */
+static int syscall_copy_user_path(uint32_t *pd, uint32_t user_ptr, char *dst, uint32_t dst_len) {
+    uint32_t i;
+
+    if (user_ptr == 0u || dst == (char *)0 || dst_len == 0u) {
+        return 0;
+    }
+    for (i = 0u; i + 1u < dst_len; i++) {
+        if (!vmm_user_range_accessible(pd, user_ptr + i, 1u, 0)) {
+            return 0;
+        }
+        dst[i] = *(const char *)(uintptr_t)(user_ptr + i);
+        if (dst[i] == '\0') {
+            return 1;
+        }
+    }
+    dst[dst_len - 1u] = '\0';
+    return 0;
 }
 
 void idt_init(void) {
@@ -285,6 +317,95 @@ static void syscall_dispatch(struct InterruptFrame *frame) {
         return;
     }
 
+    if (frame->eax == SYS_OPEN) {
+        char path[VFS_MAX_PATH];
+
+        if (!syscall_copy_user_path(pd, frame->ebx, path, sizeof(path))) {
+            frame->eax = 0xFFFFFFFFu;
+            return;
+        }
+        frame->eax = (uint32_t)vfs_open(path, frame->ecx);
+        return;
+    }
+
+    if (frame->eax == SYS_CLOSE) {
+        frame->eax = (uint32_t)vfs_close((int)frame->ebx);
+        return;
+    }
+
+    if (frame->eax == SYS_READ) {
+        if (!syscall_user_range_ok(pd, frame->ecx, frame->edx, 1)) {
+            frame->eax = 0xFFFFFFFFu;
+            return;
+        }
+        frame->eax = (uint32_t)vfs_read((int)frame->ebx, (void *)(uintptr_t)frame->ecx, frame->edx);
+        return;
+    }
+
+    if (frame->eax == SYS_WRITE_FD) {
+        if (!syscall_user_range_ok(pd, frame->ecx, frame->edx, 0)) {
+            frame->eax = 0xFFFFFFFFu;
+            return;
+        }
+        frame->eax = (uint32_t)vfs_write((int)frame->ebx, (const void *)(uintptr_t)frame->ecx, frame->edx);
+        return;
+    }
+
+    if (frame->eax == SYS_SEEK) {
+        frame->eax = (uint32_t)vfs_seek((int)frame->ebx, (int32_t)frame->ecx, (int)frame->edx);
+        return;
+    }
+
+    if (frame->eax == SYS_MKDIR) {
+        char path[VFS_MAX_PATH];
+
+        if (!syscall_copy_user_path(pd, frame->ebx, path, sizeof(path))) {
+            frame->eax = 0xFFFFFFFFu;
+            return;
+        }
+        frame->eax = (uint32_t)vfs_mkdir(path);
+        return;
+    }
+
+    if (frame->eax == SYS_DELETE) {
+        char path[VFS_MAX_PATH];
+
+        if (!syscall_copy_user_path(pd, frame->ebx, path, sizeof(path))) {
+            frame->eax = 0xFFFFFFFFu;
+            return;
+        }
+        frame->eax = (uint32_t)vfs_delete(path);
+        return;
+    }
+
+    if (frame->eax == SYS_STAT) {
+        char path[VFS_MAX_PATH];
+
+        if (!syscall_copy_user_path(pd, frame->ebx, path, sizeof(path))
+            || !syscall_user_range_ok(pd, frame->ecx, sizeof(VfsDirEntry), 1)) {
+            frame->eax = 0xFFFFFFFFu;
+            return;
+        }
+        frame->eax = (uint32_t)vfs_stat(path, (VfsDirEntry *)(uintptr_t)frame->ecx);
+        return;
+    }
+
+    if (frame->eax == SYS_LISTDIR) {
+        char path[VFS_MAX_PATH];
+        uint32_t max = frame->edx;
+
+        if (max > 0u && !syscall_user_range_ok(pd, frame->ecx, max * sizeof(VfsDirEntry), 1)) {
+            frame->eax = 0xFFFFFFFFu;
+            return;
+        }
+        if (!syscall_copy_user_path(pd, frame->ebx, path, sizeof(path))) {
+            frame->eax = 0xFFFFFFFFu;
+            return;
+        }
+        frame->eax = (uint32_t)vfs_listdir(path, (VfsDirEntry *)(uintptr_t)frame->ecx, (int)max);
+        return;
+    }
+
     frame->eax = 0xFFFFFFFFu;
 }
 
@@ -348,6 +469,13 @@ void isr_dispatch(struct InterruptFrame *frame) {
 
     if (frame->int_no == 32u) {
         pit_handle_irq();
+#if AUTO_SYNC
+        irq_fs_sync_countdown++;
+        if (irq_fs_sync_countdown >= 500u) {
+            pit_request_fs_sync();
+            irq_fs_sync_countdown = 0u;
+        }
+#endif
     }
 
     if (frame->int_no == 37u) {

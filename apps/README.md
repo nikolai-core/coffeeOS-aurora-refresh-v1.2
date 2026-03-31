@@ -14,8 +14,16 @@ app_registry_add(&my_app);
 Rebuild with:
 
 ```bash
-just clean
-just build
-just iso
+just build-only
 just run
 ```
+
+For persistent filesystem testing while developing apps:
+
+```bash
+just mkdisk
+just build-only
+just run-persist
+```
+
+Current user-facing app set in `coffeeOS aurora refresh v1.2` includes Terminal, Clock, System Info, Calculator, Notepad, Paint, Audio Mixer, Hello App, and Files.

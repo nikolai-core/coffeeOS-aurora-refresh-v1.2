@@ -19,6 +19,7 @@ uint32_t pmm_used_pages(void);
 uint32_t pmm_alloc_page_phys(void);
 uint32_t pmm_alloc_page_below(uint32_t max_phys);
 void pmm_free_page_phys(uint32_t phys_addr);
+void pmm_mark_used(void *addr);
 
 /* Reference counting for shared/COW mappings. */
 void pmm_ref_inc(uint32_t phys_addr);

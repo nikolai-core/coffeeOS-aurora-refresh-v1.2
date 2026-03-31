@@ -472,6 +472,25 @@ void pmm_free_page_phys(uint32_t phys_addr) {
     pmm_free_page((void *)(uintptr_t)phys_addr);
 }
 
+/* Mark one physical page allocated without double-counting it when already reserved. */
+void pmm_mark_used(void *addr) {
+    uint32_t page = ((uint32_t)(uintptr_t)addr) / PAGE_SIZE;
+
+    if (page >= total_pages) {
+        return;
+    }
+    if (!bitmap_test(page)) {
+        bitmap_set(page);
+        used_pages++;
+    }
+    if (refcount[page] == 0u) {
+        refcount[page] = 1u;
+    }
+    if (page == first_free_hint) {
+        first_free_hint = page + 1u;
+    }
+}
+
 void pmm_ref_inc(uint32_t phys_addr) {
     uint32_t page = phys_addr / PAGE_SIZE;
     if (page >= total_pages) {

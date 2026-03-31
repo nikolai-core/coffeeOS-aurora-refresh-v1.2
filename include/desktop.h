@@ -38,5 +38,7 @@ void terminal_print(const char *s);
 void desktop_run(void);
 int desktop_is_running(void);
 void desktop_request_kernel_shell(void);
+int desktop_launch_app_by_title(const char *title);
+int desktop_set_window_title(const char *old_title, const char *new_title);
 
 #endif

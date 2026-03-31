@@ -1,32 +1,136 @@
-# coffeeOS
+# coffeeOS aurora refresh v1.2
 
-coffeeOS is a 32-bit x86 hobby operating system kernel built with C and x86 assembly.
+coffeeOS aurora refresh v1.2 is a 32-bit x86 hobby operating system kernel built in C and x86 assembly. It boots through Multiboot into a higher-half kernel, brings up paging, interrupts, framebuffer graphics, keyboard, mouse, PIT timing, serial logging, audio, a desktop UI, a kernel shell, userland syscall plumbing, and a FAT32-backed filesystem.
 
-It boots through Multiboot into a higher-half 32-bit kernel, brings up the GDT/TSS/IDT path, paging, PIT, keyboard, mouse, serial, framebuffer output, and then drops straight into the desktop. The tree is still small enough that the top-level layout mostly speaks for itself: `src/boot/boot.s` gets you in, `src/kernel/kernel.c` does bring-up, `cpu/` holds descriptor tables and interrupt glue, `drivers/` is hardware-facing code, `mem/` and `mm/` cover physical and virtual memory, `audio/` is the mixer/synth layer, and `desktop/` plus `apps/` are the GUI side.
+## Highlights
 
-You need `gcc` with 32-bit support, `ld`, `grub-mkrescue`, `qemu-system-i386`, and `just`. Normal workflow is:
+- Higher-half 32-bit x86 kernel with GDT, TSS, IDT, paging, and PMM/VMM layers
+- Framebuffer desktop with movable windows, icons, terminal, and app launcher
+- Built-in apps including Notepad, Paint, Calculator, Clock, Mixer, System Info, and Files
+- FAT32 filesystem with VFS layer, sector cache, shell commands, syscalls, ramdisk boot image support, and ATA disk support
+- Persistent storage workflow through an external raw disk image
+- Windows-friendly export/import path via fixed VHD conversion
+- SB16 audio path with PC speaker fallback
+
+## Repository layout
+
+- `src/boot/boot.s`: Multiboot entry and early bootstrap
+- `src/kernel/kernel.c`: kernel bring-up and boot device selection
+- `cpu/`: descriptor tables, interrupt glue, and syscall dispatch
+- `drivers/`: hardware-facing drivers including graphics, input, timer, serial, ATA, and ramdisk
+- `mem/` and `mm/`: physical and virtual memory management
+- `fs/`: block devices, MBR parsing, FAT32, formatter, and VFS
+- `desktop/` and `apps/`: windowing, desktop shell, and GUI apps
+- `tools/`: host-side asset and disk-image tooling
+
+## Requirements
+
+- `gcc` with 32-bit output support
+- `ld`
+- `grub-mkrescue`
+- `qemu-system-i386`
+- `python3`
+- `just`
+
+## Build and run
+
+Standard disposable run:
 
 ```bash
-just build
-just iso
+just build-only
 just run
+```
+
+Persistent run with an external ATA disk image:
+
+```bash
+just mkdisk
+just build-only
+just run-persist
+```
+
+Audio-enabled run:
+
+```bash
+just run-audio
+```
+
+Clean build outputs:
+
+```bash
 just clean
 ```
 
-The desktop is the normal entry point. Built-in windows like Terminal, Clock, and System Info come up there, and everything else launches from desktop icons or the Start menu. App windows are created on demand instead of all opening at boot. The raw kernel shell is still there as a fallback if you leave the GUI.
+## Persistence workflow
 
-The desktop side has a few extra bits now:
+coffeeOS uses two disk paths:
 
-- app icons are baked from `icons/*.ico`
-- mouse cursors are baked from `cursors/*.cur` and `cursors/*.ani`
-- the build picks up every `apps/*.c` file automatically
-- there is a small app framework in `include/app.h`
-- audio goes through a software mixer/synth layer with SB16 output and PC speaker fallback
+- `build/disk.img`: raw FAT32 image embedded into the ISO as a Multiboot module for the disposable boot path
+- `build/persist.img`: raw MBR + FAT32 disk image attached as an ATA disk for persistent sessions
 
-If you add icons or cursors, a normal `just build` regenerates the baked asset tables automatically.
+Inside coffeeOS, use `sync` before closing QEMU, or `reboot`, to flush FAT32 metadata and cached writes.
 
-For sound in QEMU, `just run` already tries to start the VM with SB16 audio enabled. If the host/QEMU combo does not like the modern audio flags, the recipe falls back to the older SB16 path. VirtualBox can boot the OS, but audio is less reliable there because the current driver support is aimed at SB16.
+Create a new persistent disk:
 
-The raw kernel shell keeps the usual debugging commands: `help`, `ver`, `cls`, `setprompt`, `color`, `mem`, `sysinfo`, `uptime`, `history`, `echo`, `repeat`, `motd`, `dmesg`, `memmap`, `stack`, `hexdump`, `cpuinfo`, `reboot`, `panic`, and a few novelty commands. The GUI terminal routes commands through the same dispatcher, so it is the normal way to use those commands without leaving the desktop.
+```bash
+just mkdisk
+```
 
-Everything is freestanding (`-ffreestanding`, `-nostdlib`). Text rendering is still intentionally small: Terminus-style 8x16 cells, basic ASCII, a few extra symbols, and braille block support.
+Boot the persistent disk:
+
+```bash
+just run-persist
+```
+
+## Windows VHD conversion
+
+The runtime persistent disk is `build/persist.img`. When you want to inspect or edit it from Windows Disk Management, convert it to a fixed VHD:
+
+```bash
+just img-to-vhd
+```
+
+This writes `build/persist.vhd`.
+
+After editing the VHD in Windows, convert it back for coffeeOS:
+
+```bash
+just vhd-to-img
+```
+
+This restores `build/persist.img`.
+
+Do not mount the VHD in Windows while QEMU is running.
+
+## Shell and filesystem
+
+The kernel shell and GUI terminal share the same dispatcher. Filesystem commands include:
+
+- `ls`
+- `cat`
+- `write`
+- `mkdir`
+- `rm`
+- `rmdir`
+- `cp`
+- `mv`
+- `stat`
+- `df`
+- `touch`
+- `edit`
+- `sync`
+
+Notepad supports:
+
+- `Ctrl+S` save
+- `Ctrl+N` new document
+- `Ctrl+O` open by path
+
+The Files app opens `.txt` files directly in Notepad.
+
+## Notes
+
+- `just run` remains disposable by design
+- `just run-persist` is the workflow for saved files across QEMU sessions
+- The project is freestanding: `-ffreestanding`, `-nostdlib`
+- Existing packed-member warnings in FAT32 LFN decoding are known and currently tolerated

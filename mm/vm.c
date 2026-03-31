@@ -6,7 +6,7 @@
 #include "paging.h"
 #include "vm.h"
 
-#define VM_KERNEL_HEAP_BASE 0xD0000000u
+#define VM_KERNEL_HEAP_BASE 0xD1000000u
 #define VM_KERNEL_HEAP_SIZE (64u * 1024u * 1024u) /* 64 MiB */
 #define VM_KERNEL_HEAP_PAGES (VM_KERNEL_HEAP_SIZE / PAGE_SIZE)
 

@@ -10,6 +10,7 @@
 #define PIC1_DATA    0x21u
 
 static volatile uint32_t pit_ticks;
+static volatile uint8_t pit_fs_sync_pending;
 
 /* Program PIT channel 0 and unmask IRQ0 so the timer starts ticking. */
 void pit_init(uint32_t hz) {
@@ -26,6 +27,7 @@ void pit_init(uint32_t hz) {
     }
 
     pit_ticks = 0u;
+    pit_fs_sync_pending = 0u;
     io_out8(PIT_COMMAND, 0x36u);
     io_out8(PIT_CH0_DATA, (uint8_t)(divisor & 0xFFu));
     io_out8(PIT_CH0_DATA, (uint8_t)((divisor >> 8) & 0xFFu));
@@ -44,4 +46,18 @@ void pit_handle_irq(void) {
 /* Return the current PIT tick counter. */
 uint32_t get_ticks(void) {
     return pit_ticks;
+}
+
+/* Return one pending deferred filesystem sync request and clear the flag. */
+int pit_take_fs_sync_request(void) {
+    if (pit_fs_sync_pending == 0u) {
+        return 0;
+    }
+    pit_fs_sync_pending = 0u;
+    return 1;
+}
+
+/* Queue one deferred filesystem sync request for the main UI loops. */
+void pit_request_fs_sync(void) {
+    pit_fs_sync_pending = 1u;
 }
