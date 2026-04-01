@@ -1,6 +1,6 @@
-# coffeeOS aurora refresh v1.2
+# coffeeOS Aurora refresh v1.3
 
-coffeeOS aurora refresh v1.2 is a 32-bit x86 hobby operating system kernel built in C and x86 assembly. It boots through Multiboot into a higher-half kernel, brings up paging, interrupts, framebuffer graphics, keyboard, mouse, PIT timing, serial logging, audio, a desktop UI, a kernel shell, userland syscall plumbing, and a FAT32-backed filesystem.
+coffeeOS Aurora refresh v1.3 is a 32-bit x86 hobby operating system kernel built in C and x86 assembly. It boots through Multiboot into a higher-half kernel, brings up paging, interrupts, framebuffer graphics, keyboard, mouse, PIT timing, serial logging, audio, a desktop UI, a kernel shell, userland syscall plumbing, and a FAT32-backed filesystem.
 
 ## Highlights
 

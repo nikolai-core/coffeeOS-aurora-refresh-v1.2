@@ -29,4 +29,4 @@ For persistent app testing with audio enabled:
 just run-persist-audio
 ```
 
-Current user-facing app set in `coffeeOS aurora refresh v1.2` includes Terminal, Clock, System Info, Calculator, Notepad, Paint, Audio Mixer, Hello App, and Files.
+Current user-facing app set in `coffeeOS Aurora refresh v1.3` includes Terminal, Clock, System Info, Calculator, Notepad, Paint, Audio Mixer, Hello App, and Files.
