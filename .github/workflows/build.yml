@@ -17,7 +17,18 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-multilib grub-pc-bin xorriso qemu-system-x86 python3 just
+          sudo apt-get install -y \
+            gcc-multilib \
+            grub-pc-bin \
+            grub-common \
+            xorriso \
+            mtools \
+            qemu-system-x86 \
+            python3 \
+            just
+
+      - name: Set TMPDIR (fix mtools issues)
+        run: echo "TMPDIR=/tmp" >> $GITHUB_ENV
 
       - name: Build coffeeOS ISO
         run: just build-only
