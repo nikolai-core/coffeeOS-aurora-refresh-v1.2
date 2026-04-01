@@ -16,6 +16,7 @@
 #include "mouse.h"
 #include "mbr.h"
 #include "multiboot.h"
+#include "net.h"
 #include "pmm.h"
 #include "pit.h"
 #include "ramdisk.h"
@@ -103,6 +104,9 @@ void kmain(uint32_t multiboot_magic, uint32_t multiboot_info_addr) {
     audio_init();
     keyboard_init();
     mouse_init();
+    tss_set_kernel_stack(irq_stack_top);
+    __asm__ volatile ("sti");
+    net_init();
     blkdev_init();
     (void)ata_init();
     {
@@ -180,10 +184,7 @@ mount_ok:
         (void)boot_capability;
     }
 
-    tss_set_kernel_stack(irq_stack_top);
     userland_set_boot_info_addr(multiboot_info_addr);
-
-    __asm__ volatile ("sti");
     desktop_run();
     kshell_run();
 

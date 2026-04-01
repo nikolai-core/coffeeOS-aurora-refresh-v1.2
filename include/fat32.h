@@ -130,7 +130,7 @@ int fat32_dir_find(Fat32Volume *vol, uint32_t dir_cluster, const char *name,
                    Fat32DirEntry *out_entry, uint32_t *out_lba, uint32_t *out_offset);
 int fat32_dir_list(Fat32Volume *vol, uint32_t dir_cluster, Fat32DirEntry *entries, int max_entries);
 int fat32_dir_create_entry(Fat32Volume *vol, uint32_t dir_cluster, const Fat32DirEntry *entry,
-                           const char *lfn);
+                           const char *lfn, uint32_t *out_lba, uint32_t *out_offset);
 int fat32_dir_delete_entry(Fat32Volume *vol, uint32_t entry_lba, uint32_t entry_offset,
                            uint32_t file_cluster);
 int fat32_dir_mark_deleted(Fat32Volume *vol, uint32_t entry_lba, uint32_t entry_offset);

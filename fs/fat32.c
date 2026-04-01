@@ -905,7 +905,7 @@ int fat32_dir_list(Fat32Volume *vol, uint32_t dir_cluster, Fat32DirEntry *entrie
 
 /* Find enough free directory slots, extending the directory chain when needed, then write one new entry. */
 int fat32_dir_create_entry(Fat32Volume *vol, uint32_t dir_cluster, const Fat32DirEntry *entry,
-                           const char *lfn) {
+                           const char *lfn, uint32_t *out_lba, uint32_t *out_offset) {
     uint32_t short_name[3];
     uint8_t name83[11];
     char short_text[16];
@@ -978,8 +978,9 @@ int fat32_dir_create_entry(Fat32Volume *vol, uint32_t dir_cluster, const Fat32Di
                             }
                             if (need_lfn && write_slot < lfn_slots) {
                                 Fat32LFNEntry *lfn_entry = (Fat32LFNEntry *)(void *)(write_sector + slot_off);
-                                uint32_t order = lfn_slots - write_slot;
-                                uint32_t base = (order - 1u) * 13u;
+                                uint32_t ordinal = lfn_slots - write_slot;
+                                uint32_t order = ordinal;
+                                uint32_t base = (ordinal - 1u) * 13u;
                                 uint32_t i;
                                 uint16_t chars[13];
 
@@ -1023,6 +1024,12 @@ int fat32_dir_create_entry(Fat32Volume *vol, uint32_t dir_cluster, const Fat32Di
                         }
                         if (fat32_cache_flush(vol) != 0) {
                             return -1;
+                        }
+                        if (out_lba != (uint32_t *)0) {
+                            *out_lba = run_lba + ((run_offset + (lfn_slots * sizeof(Fat32DirEntry))) / BLOCK_SIZE);
+                        }
+                        if (out_offset != (uint32_t *)0) {
+                            *out_offset = (run_offset + (lfn_slots * sizeof(Fat32DirEntry))) % BLOCK_SIZE;
                         }
                         return 0;
                     }

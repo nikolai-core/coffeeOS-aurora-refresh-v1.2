@@ -161,4 +161,70 @@ static inline int sys_listdir(const char *path, VfsDirEntry *entries, int max) {
     return ret;
 }
 
+static inline int sys_net_dns(const char *host, uint32_t *out_ip) {
+    int ret;
+    __asm__ volatile (
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(SYS_NET_DNS), "b"(host), "c"(out_ip)
+        : "memory"
+    );
+    return ret;
+}
+
+static inline int sys_net_ping(uint32_t ip, int count) {
+    int ret;
+    __asm__ volatile (
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(SYS_NET_PING), "b"(ip), "c"(count)
+        : "memory"
+    );
+    return ret;
+}
+
+static inline int sys_tcp_connect(uint32_t ip, uint16_t port) {
+    int ret;
+    __asm__ volatile (
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(SYS_TCP_CONNECT), "b"(ip), "c"((uint32_t)port)
+        : "memory"
+    );
+    return ret;
+}
+
+static inline int sys_tcp_send(int fd, const void *buf, uint16_t len) {
+    int ret;
+    __asm__ volatile (
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(SYS_TCP_SEND), "b"(fd), "c"(buf), "d"((uint32_t)len)
+        : "memory"
+    );
+    return ret;
+}
+
+static inline int sys_tcp_recv(int fd, void *buf, uint16_t max_len) {
+    int ret;
+    __asm__ volatile (
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(SYS_TCP_RECV), "b"(fd), "c"(buf), "d"((uint32_t)max_len)
+        : "memory"
+    );
+    return ret;
+}
+
+static inline int sys_tcp_close(int fd) {
+    int ret;
+    __asm__ volatile (
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(SYS_TCP_CLOSE), "b"(fd)
+        : "memory"
+    );
+    return ret;
+}
+
 #endif

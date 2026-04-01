@@ -2,18 +2,25 @@
 
 #include "ascii_util.h"
 #include "desktop.h"
+#include "arp.h"
+#include "dns.h"
 #include "fat32.h"
 #include "gfx.h"
+#include "http.h"
+#include "icmp.h"
 #include "io.h"
 #include "keyboard.h"
 #include "kshell.h"
 #include "mouse.h"
+#include "net.h"
+#include "netif.h"
 #include "notepad_app.h"
 #include "pmm.h"
 #include "pit.h"
 #include "ramdisk.h"
 #include "serial.h"
 #include "synth.h"
+#include "tcp.h"
 #include "userland.h"
 #include "vfs.h"
 #include "x86_cpu.h"
@@ -72,6 +79,16 @@ static const struct CommandInfo kshell_commands[] = {
     {"df", "Show mounted ramdisk usage"},
     {"touch [path]", "Create an empty file if missing"},
     {"edit [path]", "Open a file in Notepad"},
+    {"ifconfig", "Show network interface status"},
+    {"ping [host] [count]", "Send ICMP echo requests"},
+    {"arp", "Show the ARP cache"},
+    {"dns [host]", "Resolve one hostname"},
+    {"nslookup [host]", "Resolve one hostname with TTL"},
+    {"curl [url]", "Fetch and print one HTTP body"},
+    {"wget [url] [dst]", "Download one HTTP body to a file"},
+    {"netstat", "Show open TCP sockets"},
+    {"route", "Show the routing table"},
+    {"tcptest [host] [port]", "Open one TCP test connection"},
     {"pwd", "Print the current working directory"},
     {"cd [path]", "Change the current working directory"},
     {"history save", "Write history to /history.txt"},
@@ -97,8 +114,16 @@ static char prompt_text[KSHELL_PROMPT_MAX] = "coffeeos> ";
 static char cwd[VFS_MAX_PATH] = "/";
 static char kshell_cat_buffer[CAT_LIMIT + 1u];
 static uint8_t kshell_copy_buffer[COPY_LIMIT];
+static HttpResponse kshell_http_response;
+static char kshell_wget_args[KSHELL_LINE_MAX];
+static char kshell_wget_url[KSHELL_LINE_MAX];
+static char kshell_wget_dest[VFS_MAX_PATH];
+static char kshell_wget_resolved[VFS_MAX_PATH];
+static char kshell_wget_parent[VFS_MAX_PATH];
+static char kshell_wget_leaf[VFS_NAME_MAX];
 
 static void print_spaces(uint32_t count);
+static void print_hex_byte(uint8_t value);
 
 static void print(const char *s) {
     gfx_print(s);
@@ -808,6 +833,422 @@ static void cmd_df(void) {
     print("%\n");
 }
 
+/* Print one host-order IPv4 address in dotted decimal form. */
+static void print_ip_u32(uint32_t ip) {
+    char text[24];
+
+    net_format_ip(ip, text, sizeof(text));
+    print(text);
+}
+
+/* Print one 6-byte MAC address in hex pairs. */
+static void print_mac(const uint8_t *mac) {
+    uint32_t i;
+
+    for (i = 0u; i < 6u; i++) {
+        print_hex_byte(mac[i]);
+        if (i != 5u) {
+            putc_out(':');
+        }
+    }
+}
+
+/* Return the primary interface or print a missing-NIC error. */
+static NetInterface *require_any_iface(void) {
+    NetInterface *iface = netif_get(0);
+
+    if (iface == (NetInterface *)0) {
+        print("No network interface available\n");
+        return (NetInterface *)0;
+    }
+    return iface;
+}
+
+/* Return the configured primary interface or print a config error. */
+static NetInterface *require_configured_iface(void) {
+    NetInterface *iface = require_any_iface();
+
+    if (iface == (NetInterface *)0) {
+        return (NetInterface *)0;
+    }
+    if (!iface->up || iface->ip == 0u) {
+        print("Interface not configured\n");
+        return (NetInterface *)0;
+    }
+    return iface;
+}
+
+/* Resolve one host token as either dotted decimal or DNS. */
+static int resolve_host_token(const char *host, uint32_t *out_ip) {
+    if (net_parse_ip(host, out_ip)) {
+        return 0;
+    }
+    return dns_resolve(host, out_ip);
+}
+
+/* Print all populated DNS cache entries. */
+static void print_dns_cache_lines(void) {
+    uint32_t i;
+
+    for (i = 0u; i < DNS_CACHE_SIZE; i++) {
+        const DnsEntry *entry = dns_get_entry((int)i);
+
+        if (entry != (const DnsEntry *)0 && entry->valid) {
+            print("  ");
+            print(entry->name);
+            print(" -> ");
+            print_ip_u32(entry->ip);
+            print(" ttl=");
+            write_u32(entry->ttl_ticks / 100u);
+            print("s\n");
+        }
+    }
+}
+
+/* Print interface link state, MAC, IPv4 settings, and counters. */
+static void cmd_ifconfig(void) {
+    NetInterface *iface = require_any_iface();
+
+    if (iface == (NetInterface *)0) {
+        return;
+    }
+    print(iface->name);
+    print(iface->up ? "    UP   MAC: " : "    DOWN MAC: ");
+    print_mac(iface->mac);
+    print("\n");
+    print("        IP:  ");
+    print_ip_u32(iface->ip);
+    print("  Mask: ");
+    print_ip_u32(iface->netmask);
+    print("  GW: ");
+    print_ip_u32(iface->gateway);
+    print("\n");
+    print("        DNS: ");
+    print_ip_u32(iface->dns);
+    print("\n");
+    print("        RX: ");
+    write_u32((uint32_t)iface->rx_packets);
+    print(" packets (");
+    write_u32((uint32_t)iface->rx_bytes);
+    print(" bytes)\n");
+    print("        TX: ");
+    write_u32((uint32_t)iface->tx_packets);
+    print(" packets (");
+    write_u32((uint32_t)iface->tx_bytes);
+    print(" bytes)\n");
+}
+
+/* Send repeated blocking ICMP echo requests and print per-packet RTT. */
+static void cmd_ping(const char *trimmed) {
+    char args[KSHELL_LINE_MAX];
+    char host[KSHELL_LINE_MAX];
+    char count_text[KSHELL_LINE_MAX];
+    NetInterface *iface = require_configured_iface();
+    uint32_t ip;
+    uint32_t count = 4u;
+    uint32_t sent = 0u;
+    uint32_t recv = 0u;
+    uint32_t rtt_ticks;
+    uint32_t rtt_ms;
+    int ok = 0;
+    uint32_t i;
+
+    if (iface == (NetInterface *)0) {
+        return;
+    }
+    copy_string(args, sizeof(args), trimmed + 4);
+    if (!split_once(args, host, sizeof(host), count_text, sizeof(count_text))) {
+        print("Usage: ping [host] [count]\n");
+        return;
+    }
+    if (count_text[0] != '\0') {
+        count = ascii_parse_u32(count_text, &ok);
+        if (!ok || count == 0u) {
+            count = 4u;
+        }
+    }
+    if (resolve_host_token(host, &ip) != 0) {
+        print("failed to resolve\n");
+        return;
+    }
+    for (i = 0u; i < count; i++) {
+        sent++;
+        if (icmp_ping(iface, ip, (uint16_t)i, 100u) == 0) {
+            recv++;
+            rtt_ticks = icmp_last_rtt_ticks();
+            print("reply from ");
+            print_ip_u32(ip);
+            print(": rtt=");
+            if (rtt_ticks == 0u) {
+                print("<1ms\n");
+            } else {
+                rtt_ms = rtt_ticks * 10u;
+                write_u32(rtt_ms);
+                print("ms\n");
+            }
+        } else {
+            print("timeout\n");
+        }
+    }
+    print("summary: ");
+    write_u32(sent);
+    print(" packets transmitted, ");
+    write_u32(recv);
+    print(" received, ");
+    write_u32(sent == 0u ? 0u : ((sent - recv) * 100u) / sent);
+    print("% loss\n");
+    if (recv == 0u && ip != iface->gateway) {
+        print("Note: QEMU user networking only supports ICMP to the gateway (10.0.2.2). ");
+        print("Use curl or wget to test internet connectivity.\n");
+    }
+}
+
+/* Print the ARP cache in a shell-friendly table. */
+static void cmd_arp_cache(void) {
+    uint32_t i;
+    uint32_t count = 0u;
+
+    if (require_any_iface() == (NetInterface *)0) {
+        return;
+    }
+    for (i = 0u; i < ARP_CACHE_SIZE; i++) {
+        const ArpEntry *entry = arp_get_entry((int)i);
+        if (entry != (const ArpEntry *)0 && entry->valid) {
+            count++;
+        }
+    }
+    print("ARP cache (");
+    write_u32(count);
+    print(" entries):\n");
+    for (i = 0u; i < ARP_CACHE_SIZE; i++) {
+        const ArpEntry *entry = arp_get_entry((int)i);
+        if (entry == (const ArpEntry *)0 || !entry->valid) {
+            continue;
+        }
+        print("  ");
+        print_ip_u32(entry->ip);
+        print("    ");
+        print_mac(entry->mac);
+        print("   valid  ttl=");
+        write_u32(entry->ttl / 100u);
+        print("s\n");
+    }
+}
+
+/* Resolve one hostname and print the IPv4 result plus DNS cache contents. */
+static void cmd_dns_lookup(const char *trimmed, int verbose) {
+    const char *arg = trimmed + (verbose ? 8 : 3);
+    uint32_t ip;
+
+    while (*arg == ' ') {
+        arg++;
+    }
+    if (*arg == '\0') {
+        print(verbose ? "Usage: nslookup [host]\n" : "Usage: dns [host]\n");
+        return;
+    }
+    if (require_configured_iface() == (NetInterface *)0) {
+        return;
+    }
+    if (dns_resolve(arg, &ip) != 0) {
+        print("failed to resolve\n");
+        return;
+    }
+    print(arg);
+    print(" -> ");
+    print_ip_u32(ip);
+    if (verbose) {
+        print(" ttl=");
+        write_u32(dns_last_ttl_ticks() / 100u);
+        print("s");
+    }
+    print("\n");
+    print_dns_cache_lines();
+}
+
+/* Download one HTTP body into a file path through the VFS layer. */
+static void cmd_wget_http(const char *trimmed) {
+    NetInterface *iface = require_configured_iface();
+    int rc;
+
+    if (iface == (NetInterface *)0) {
+        return;
+    }
+    copy_string(kshell_wget_args, sizeof(kshell_wget_args), trimmed + 4);
+    if (!split_once(kshell_wget_args, kshell_wget_url, sizeof(kshell_wget_url),
+                    kshell_wget_dest, sizeof(kshell_wget_dest))
+        || kshell_wget_dest[0] == '\0') {
+        print("Usage: wget [url] [dest_path]\n");
+        return;
+    }
+    if (kshell_resolve_path(kshell_wget_dest, kshell_wget_resolved, sizeof(kshell_wget_resolved)) != VFS_OK) {
+        print_vfs_error(VFS_ERR_BADPATH);
+        return;
+    }
+    print("Connecting to host...\n");
+    rc = http_get(iface, kshell_wget_url, &kshell_http_response, 3000u);
+    if (rc != 0) {
+        print("Download failed: ");
+        print(http_last_error());
+        print("\n");
+        return;
+    }
+
+    rc = vfs_write_file(kshell_wget_resolved, kshell_http_response.body, kshell_http_response.body_len);
+    if (rc != VFS_OK && kshell_split_parent(kshell_wget_resolved, kshell_wget_parent, kshell_wget_leaf) == VFS_OK
+        && ascii_starts_with(kshell_wget_parent, "/home/")) {
+        (void)vfs_mkdir("/home");
+        (void)vfs_mkdir("/home/user");
+        rc = vfs_write_file(kshell_wget_resolved, kshell_http_response.body, kshell_http_response.body_len);
+    }
+    if (rc != VFS_OK) {
+        print_vfs_error(rc);
+        return;
+    }
+
+    print("Saved ");
+    write_u32(kshell_http_response.body_len);
+    print(" bytes to ");
+    print(kshell_wget_resolved);
+    print("\n");
+}
+
+/* Fetch one HTTP body and print the first bytes to the terminal. */
+static void cmd_curl_http(const char *trimmed) {
+    const char *arg = trimmed + 4;
+    NetInterface *iface = require_configured_iface();
+    uint32_t i;
+
+    if (iface == (NetInterface *)0) {
+        return;
+    }
+    while (*arg == ' ') {
+        arg++;
+    }
+    if (*arg == '\0') {
+        print("Usage: curl [url]\n");
+        return;
+    }
+    if (http_get(iface, arg, &kshell_http_response, 3000u) != 0) {
+        print("HTTP request failed: ");
+        print(http_last_error());
+        print("\n");
+        return;
+    }
+    print("HTTP ");
+    write_u32((uint32_t)kshell_http_response.status_code);
+    print(" OK\n");
+    for (i = 0u; i < kshell_http_response.body_len && i < 2048u; i++) {
+        putc_out((char)kshell_http_response.body[i]);
+    }
+    if (kshell_http_response.body_len > 2048u) {
+        print("\n... (");
+        write_u32(kshell_http_response.body_len);
+        print(" bytes total)\n");
+    } else if (kshell_http_response.body_len == 0u
+               || kshell_http_response.body[kshell_http_response.body_len - 1u] != '\n') {
+        print("\n");
+    }
+}
+
+/* Print the routing table implied by the single configured interface. */
+static void cmd_route_show(void) {
+    NetInterface *iface = require_configured_iface();
+
+    if (iface == (NetInterface *)0) {
+        return;
+    }
+    print("Destination    Gateway        Mask             Interface\n");
+    print("0.0.0.0        ");
+    print_ip_u32(iface->gateway);
+    print("       0.0.0.0          ");
+    print(iface->name);
+    print("\n");
+    print_ip_u32(iface->ip & iface->netmask);
+    print("       0.0.0.0        ");
+    print_ip_u32(iface->netmask);
+    print("    ");
+    print(iface->name);
+    print("\n");
+}
+
+/* Print the open TCP socket table. */
+static void cmd_netstat_show(void) {
+    uint32_t i;
+
+    print("Proto  Local           Remote          State\n");
+    for (i = 0u; i < TCP_MAX_SOCKETS; i++) {
+        const TcpSocket *sock = tcp_get_socket((int)i);
+
+        if (sock == (const TcpSocket *)0) {
+            continue;
+        }
+        print("TCP    ");
+        print_ip_u32(sock->local_ip);
+        putc_out(':');
+        write_u32(sock->local_port);
+        print("      ");
+        print_ip_u32(sock->remote_ip);
+        putc_out(':');
+        write_u32(sock->remote_port);
+        print("  ");
+        print(tcp_state_name(sock->state));
+        print("\n");
+    }
+}
+
+/* Open one TCP connection and optionally send a simple HTTP HEAD request. */
+static void cmd_tcptest(const char *trimmed) {
+    char args[KSHELL_LINE_MAX];
+    char host[KSHELL_LINE_MAX];
+    char port_text[KSHELL_LINE_MAX];
+    NetInterface *iface = require_configured_iface();
+    uint32_t ip;
+    uint32_t port;
+    int ok = 0;
+    int fd;
+    int n;
+    char buf[256];
+    uint32_t i;
+
+    if (iface == (NetInterface *)0) {
+        return;
+    }
+    copy_string(args, sizeof(args), trimmed + 7);
+    if (!split_once(args, host, sizeof(host), port_text, sizeof(port_text)) || port_text[0] == '\0') {
+        print("Usage: tcptest [host] [port]\n");
+        return;
+    }
+    port = ascii_parse_u32(port_text, &ok);
+    if (!ok || port == 0u || port > 65535u || resolve_host_token(host, &ip) != 0) {
+        print("Invalid host or port\n");
+        return;
+    }
+    fd = tcp_connect(iface, ip, (uint16_t)port, 300u);
+    if (fd < 0) {
+        print("Timeout\n");
+        return;
+    }
+    print("Connected\n");
+    if (port == 80u) {
+        const char req[] = "HEAD / HTTP/1.0\r\nHost: test\r\n\r\n";
+        (void)tcp_send(fd, req, (uint16_t)(sizeof(req) - 1u));
+    }
+    n = tcp_recv(fd, buf, (uint16_t)(sizeof(buf) - 1u), 300u);
+    if (n > 0) {
+        buf[n] = '\0';
+        for (i = 0u; i < (uint32_t)n; i++) {
+            if (buf[i] == '\r' || buf[i] == '\n') {
+                buf[i] = '\0';
+                break;
+            }
+        }
+        print(buf);
+        print("\n");
+    }
+    tcp_close(fd);
+}
+
 /* Create one empty file if it does not already exist. */
 static void cmd_touch(const char *trimmed) {
     const char *arg = trimmed + 5;
@@ -1513,6 +1954,56 @@ static void kshell_dispatch_normalized(const char *trimmed, const char *normaliz
 
     if (ascii_streq(normalized, "touch") || ascii_starts_with(normalized, "touch ")) {
         cmd_touch(trimmed);
+        return;
+    }
+
+    if (ascii_streq(normalized, "ifconfig")) {
+        cmd_ifconfig();
+        return;
+    }
+
+    if (ascii_streq(normalized, "ping") || ascii_starts_with(normalized, "ping ")) {
+        cmd_ping(trimmed);
+        return;
+    }
+
+    if (ascii_streq(normalized, "arp")) {
+        cmd_arp_cache();
+        return;
+    }
+
+    if (ascii_streq(normalized, "dns") || ascii_starts_with(normalized, "dns ")) {
+        cmd_dns_lookup(trimmed, 0);
+        return;
+    }
+
+    if (ascii_streq(normalized, "nslookup") || ascii_starts_with(normalized, "nslookup ")) {
+        cmd_dns_lookup(trimmed, 1);
+        return;
+    }
+
+    if (ascii_streq(normalized, "curl") || ascii_starts_with(normalized, "curl ")) {
+        cmd_curl_http(trimmed);
+        return;
+    }
+
+    if (ascii_streq(normalized, "wget") || ascii_starts_with(normalized, "wget ")) {
+        cmd_wget_http(trimmed);
+        return;
+    }
+
+    if (ascii_streq(normalized, "route")) {
+        cmd_route_show();
+        return;
+    }
+
+    if (ascii_streq(normalized, "netstat")) {
+        cmd_netstat_show();
+        return;
+    }
+
+    if (ascii_streq(normalized, "tcptest") || ascii_starts_with(normalized, "tcptest ")) {
+        cmd_tcptest(trimmed);
         return;
     }
 

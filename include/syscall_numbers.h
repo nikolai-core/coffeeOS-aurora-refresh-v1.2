@@ -15,7 +15,24 @@ enum {
     SYS_MKDIR = 10,
     SYS_DELETE = 11,
     SYS_STAT = 12,
-    SYS_LISTDIR = 13
+    SYS_LISTDIR = 13,
+    SYS_SOCKET = 14,
+    SYS_BIND = 15,
+    SYS_LISTEN = 16,
+    SYS_ACCEPT = 17,
+    SYS_CONNECT = 18,
+    SYS_SEND = 19,
+    SYS_RECV = 20,
+    SYS_SENDTO = 21,
+    SYS_RECVFROM = 22,
+    SYS_SOCKET_CLOSE = 23,
+    SYS_NET_DNS = 24,
+    SYS_NET_PING = 25,
+    SYS_TCP_CONNECT = 26,
+    SYS_TCP_SEND = 27,
+    SYS_TCP_RECV = 28,
+    SYS_TCP_CLOSE = 29,
+    SYS_NET_STAT = 30
 };
 
 #endif

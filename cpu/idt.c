@@ -5,7 +5,10 @@
 #include "io.h"
 #include "keyboard.h"
 #include "mouse.h"
+#include "net.h"
+#include "net/socket_abi.h"
 #include "pit.h"
+#include "rtl8139.h"
 #include "serial.h"
 #include "sb16.h"
 #include "syscall_numbers.h"
@@ -14,6 +17,10 @@
 #include "vfs.h"
 #include "vmm.h"
 #include "vm.h"
+#include "dns.h"
+#include "icmp.h"
+#include "netif.h"
+#include "tcp.h"
 
 #define AUTO_SYNC 1
 
@@ -169,6 +176,18 @@ static int syscall_user_range_ok(uint32_t *pd, uint32_t addr, uint32_t len, int 
         return 1;
     }
     return vmm_user_range_accessible(pd, addr, len, write);
+}
+
+static int syscall_copy_user_bytes(uint32_t *pd, uint32_t user_ptr, void *dst, uint32_t len) {
+    uint32_t i;
+
+    if (dst == (void *)0 || (len != 0u && !vmm_user_range_accessible(pd, user_ptr, len, 0))) {
+        return 0;
+    }
+    for (i = 0u; i < len; i++) {
+        ((uint8_t *)dst)[i] = ((const uint8_t *)(uintptr_t)user_ptr)[i];
+    }
+    return 1;
 }
 
 /* Copy one NUL-terminated user string into a fixed kernel buffer. */
@@ -406,6 +425,93 @@ static void syscall_dispatch(struct InterruptFrame *frame) {
         return;
     }
 
+    if (frame->eax == SYS_SOCKET || frame->eax == SYS_BIND || frame->eax == SYS_LISTEN
+        || frame->eax == SYS_ACCEPT || frame->eax == SYS_CONNECT || frame->eax == SYS_SEND
+        || frame->eax == SYS_RECV || frame->eax == SYS_SENDTO || frame->eax == SYS_RECVFROM
+        || frame->eax == SYS_SOCKET_CLOSE) {
+        frame->eax = 0xFFFFFFFFu;
+        return;
+    }
+
+    if (frame->eax == SYS_NET_DNS) {
+        char host[DNS_MAX_NAME];
+        uint32_t ip;
+
+        if (!syscall_copy_user_path(pd, frame->ebx, host, sizeof(host))
+            || !syscall_user_range_ok(pd, frame->ecx, sizeof(uint32_t), 1)) {
+            frame->eax = 0xFFFFFFFFu;
+            return;
+        }
+        frame->eax = (dns_resolve(host, &ip) == 0) ? 0u : 0xFFFFFFFFu;
+        if (frame->eax == 0u) {
+            *(uint32_t *)(uintptr_t)frame->ecx = ip;
+        }
+        return;
+    }
+
+    if (frame->eax == SYS_NET_PING) {
+        NetInterface *iface = netif_default();
+        int rc = -1;
+        uint32_t i;
+
+        if (iface == (NetInterface *)0) {
+            frame->eax = 0xFFFFFFFFu;
+            return;
+        }
+        for (i = 0u; i < frame->ecx; i++) {
+            if (icmp_ping(iface, frame->ebx, (uint16_t)i, 100u) == 0) {
+                rc = 0;
+            }
+        }
+        frame->eax = (rc == 0) ? get_ticks() : 0xFFFFFFFFu;
+        return;
+    }
+
+    if (frame->eax == SYS_TCP_CONNECT) {
+        NetInterface *iface = netif_default();
+
+        frame->eax = (iface == (NetInterface *)0)
+            ? 0xFFFFFFFFu
+            : (uint32_t)tcp_connect(iface, frame->ebx, (uint16_t)frame->ecx, 300u);
+        return;
+    }
+
+    if (frame->eax == SYS_TCP_SEND) {
+        if (!syscall_user_range_ok(pd, frame->ecx, frame->edx, 0)) {
+            frame->eax = 0xFFFFFFFFu;
+            return;
+        }
+        frame->eax = (uint32_t)tcp_send((int)frame->ebx, (const void *)(uintptr_t)frame->ecx, (uint16_t)frame->edx);
+        return;
+    }
+
+    if (frame->eax == SYS_TCP_RECV) {
+        if (!syscall_user_range_ok(pd, frame->ecx, frame->edx, 1)) {
+            frame->eax = 0xFFFFFFFFu;
+            return;
+        }
+        frame->eax = (uint32_t)tcp_recv((int)frame->ebx, (void *)(uintptr_t)frame->ecx, (uint16_t)frame->edx, 300u);
+        return;
+    }
+
+    if (frame->eax == SYS_TCP_CLOSE) {
+        tcp_close((int)frame->ebx);
+        frame->eax = 0u;
+        return;
+    }
+
+    if (frame->eax == SYS_NET_STAT) {
+        NetInterface *iface = netif_get(0);
+
+        if (iface == (NetInterface *)0 || !syscall_user_range_ok(pd, frame->ebx, sizeof(NetInterface), 1)) {
+            frame->eax = 0xFFFFFFFFu;
+            return;
+        }
+        *(NetInterface *)(uintptr_t)frame->ebx = *iface;
+        frame->eax = 0u;
+        return;
+    }
+
     frame->eax = 0xFFFFFFFFu;
 }
 
@@ -469,6 +575,7 @@ void isr_dispatch(struct InterruptFrame *frame) {
 
     if (frame->int_no == 32u) {
         pit_handle_irq();
+        net_tick();
 #if AUTO_SYNC
         irq_fs_sync_countdown++;
         if (irq_fs_sync_countdown >= 500u) {
@@ -489,6 +596,12 @@ void isr_dispatch(struct InterruptFrame *frame) {
 
     if (frame->int_no == 44u) {
         mouse_handle_irq();
+    }
+
+    if (frame->int_no >= 32u && frame->int_no <= 47u) {
+        if (rtl8139_present() && rtl8139_irq_line() == (int)(frame->int_no - 32u)) {
+            rtl8139_irq();
+        }
     }
 
     if (frame->int_no >= 40u && frame->int_no <= 47u) {

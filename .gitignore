@@ -1,6 +1,7 @@
 # Build output
 build/
 iso/
+tmp/
 
 # Tool/cache junk
 *.o
@@ -26,3 +27,6 @@ Thumbs.db
 # Python cache
 __pycache__/
 *.pyc
+
+# Local scratch artifacts
+fix.png

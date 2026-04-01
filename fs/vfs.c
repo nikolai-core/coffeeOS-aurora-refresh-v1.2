@@ -455,6 +455,7 @@ int vfs_open(const char *path, uint32_t flags) {
     uint32_t entry_lba = 0u;
     uint32_t entry_offset = 0u;
     int r;
+    int created = 0;
 
     if (vol == (Fat32Volume *)0 || path == (const char *)0 || path[0] != '/') {
         return VFS_ERR_BADPATH;
@@ -505,13 +506,12 @@ int vfs_open(const char *path, uint32_t flags) {
         fat32_set_entry_cluster(&new_entry, new_cluster);
         new_entry.file_size = 0u;
 
-        if (fat32_dir_create_entry(vol, parent_cluster, &new_entry, leaf) != 0) {
+        if (fat32_dir_create_entry(vol, parent_cluster, &new_entry, leaf, &entry_lba, &entry_offset) != 0) {
             return VFS_ERR_IO;
         }
-        if (!fat32_dir_find(vol, parent_cluster, leaf, &entry, &entry_lba, &entry_offset)) {
-            return VFS_ERR_IO;
-        }
-        cluster = fat32_entry_cluster(&entry);
+        entry = new_entry;
+        cluster = new_cluster;
+        created = 1;
     } else if (r != VFS_OK) {
         return r;
     }
@@ -532,7 +532,7 @@ int vfs_open(const char *path, uint32_t flags) {
     vfs_files[fd].entry_offset = entry_offset;
     vfs_copy_string(vfs_files[fd].path, VFS_MAX_PATH, path);
 
-    if ((flags & VFS_O_TRUNC) != 0u) {
+    if ((flags & VFS_O_TRUNC) != 0u && !created) {
         uint32_t new_cluster = fat32_alloc_cluster(vol);
 
         if (new_cluster == FAT32_BAD) {
@@ -744,7 +744,8 @@ int vfs_mkdir(const char *path) {
     vfs_memcpy(entry.ext, name83 + 8u, 3u);
     entry.attributes = FAT_ATTR_DIRECTORY;
     fat32_set_entry_cluster(&entry, new_cluster);
-    return fat32_dir_create_entry(vol, parent_cluster, &entry, leaf) == 0 ? VFS_OK : VFS_ERR_IO;
+    return fat32_dir_create_entry(vol, parent_cluster, &entry, leaf, (uint32_t *)0, (uint32_t *)0) == 0
+        ? VFS_OK : VFS_ERR_IO;
 }
 
 /* Delete one file or empty directory by removing its directory entry and cluster chain. */
@@ -821,7 +822,8 @@ int vfs_rename(const char *old_path, const char *new_path) {
     vfs_to_83(new_leaf, name83);
     vfs_memcpy(new_entry.name, name83, 8u);
     vfs_memcpy(new_entry.ext, name83 + 8u, 3u);
-    if (fat32_dir_create_entry(vol, new_parent_cluster, &new_entry, new_leaf) != 0) {
+    if (fat32_dir_create_entry(vol, new_parent_cluster, &new_entry, new_leaf,
+                               (uint32_t *)0, (uint32_t *)0) != 0) {
         return VFS_ERR_IO;
     }
     if (fat32_dir_mark_deleted(vol, old_lba, old_offset) != 0) {

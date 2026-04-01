@@ -11,6 +11,7 @@
 #include "keyboard.h"
 #include "kshell.h"
 #include "mouse.h"
+#include "net.h"
 #include "pit.h"
 #include "pmm.h"
 #include "ramdisk.h"
@@ -2702,6 +2703,7 @@ void desktop_run(void) {
         int wheel = 0;
 
         speaker_update();
+        net_poll();
         if (pit_take_fs_sync_request()) {
             (void)fat32_sync(0);
             (void)ramdisk_sync_backing_store();

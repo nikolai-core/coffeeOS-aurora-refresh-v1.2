@@ -9,6 +9,7 @@ extern App filemanager_app;
 extern App notepad_app;
 extern App paint_app;
 extern App mixer_app;
+extern App netmon_app;
 
 static void app_registry_add(App *app) {
     if (app_count >= MAX_APPS) {
@@ -32,4 +33,5 @@ void app_registry_init(void) {
     app_registry_add(&notepad_app);
     app_registry_add(&paint_app);
     app_registry_add(&mixer_app);
+    app_registry_add(&netmon_app);
 }

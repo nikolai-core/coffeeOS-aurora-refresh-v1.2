@@ -34,28 +34,25 @@ coffeeOS aurora refresh v1.2 is a 32-bit x86 hobby operating system kernel built
 
 ## Build and run
 
-Standard disposable run:
+Rebuild everything from a clean tree:
 
 ```bash
-just build-only
-just run
+just rebuild
 ```
 
-Persistent run with an external ATA disk image:
+Persistent run with ATA storage and RTL8139 networking:
 
 ```bash
-just mkdisk
-just build-only
 just run-persist
 ```
 
-Audio-enabled run:
+Persistent run with ATA storage, RTL8139 networking, and SB16 audio:
 
 ```bash
-just run-audio
+just run-persist-audio
 ```
 
-Clean build outputs:
+Remove generated build outputs:
 
 ```bash
 just clean
@@ -65,7 +62,7 @@ just clean
 
 coffeeOS uses two disk paths:
 
-- `build/disk.img`: raw FAT32 image embedded into the ISO as a Multiboot module for the disposable boot path
+- `build/disk.img`: raw FAT32 image embedded into the ISO as a Multiboot module used at boot
 - `build/persist.img`: raw MBR + FAT32 disk image attached as an ATA disk for persistent sessions
 
 Inside coffeeOS, use `sync` before closing QEMU, or `reboot`, to flush FAT32 metadata and cached writes.
@@ -76,10 +73,16 @@ Create a new persistent disk:
 just mkdisk
 ```
 
-Boot the persistent disk:
+Boot the persistent disk with networking:
 
 ```bash
 just run-persist
+```
+
+Boot the persistent disk with networking and audio:
+
+```bash
+just run-persist-audio
 ```
 
 ## Windows VHD conversion
@@ -130,7 +133,8 @@ The Files app opens `.txt` files directly in Notepad.
 
 ## Notes
 
-- `just run` remains disposable by design
-- `just run-persist` is the workflow for saved files across QEMU sessions
+- `just run-persist` is the default workflow for saved files across QEMU sessions
+- `just run-persist-audio` adds SB16 audio on top of the same persistent networked setup
+- Both persistent run targets attach the RTL8139 NIC with QEMU user networking
 - The project is freestanding: `-ffreestanding`, `-nostdlib`
 - Existing packed-member warnings in FAT32 LFN decoding are known and currently tolerated
