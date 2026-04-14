@@ -27,6 +27,10 @@ void gfx_set_cursor(const char *name);
 void gfx_draw_cursor(int x, int y);
 void gfx_erase_cursor(int x, int y);
 void gfx_present(void);
+/* Non-zero when the cursor sprite has been composited into the backbuffer
+   and has not yet been erased. desktop.c reads this to decide whether a
+   cursor redraw + present is needed on idle frames. */
+extern uint8_t cursor_drawn;
 void gfx_putc(char c);
 void gfx_print(const char *msg);
 void gfx_write_hex(uint32_t value);

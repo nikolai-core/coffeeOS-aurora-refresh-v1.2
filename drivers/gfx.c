@@ -35,7 +35,7 @@ static uint8_t dirty_region_valid;
 static uint8_t cursor_saved_pixels[64u * 64u * 4u];
 static int cursor_saved_x;
 static int cursor_saved_y;
-static uint8_t cursor_drawn;
+uint8_t cursor_drawn;
 static int cursor_saved_w;
 static int cursor_saved_h;
 static const struct CursorAsset *current_cursor;
@@ -326,6 +326,9 @@ void gfx_draw_cursor(int x, int y) {
     int draw_y;
     const struct CursorFrame *frame;
 
+    if (cursor_drawn) {
+        gfx_erase_cursor(cursor_saved_x, cursor_saved_y);
+    }
     if (framebuffer_base == 0 || framebuffer_backbuffer_bytes == 0u) {
         return;
     }

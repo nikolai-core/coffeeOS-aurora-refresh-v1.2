@@ -2744,10 +2744,6 @@ void desktop_run(void) {
         }
 
         window_dirty = desktop_any_visible_window_dirty();
-        if (mouse_moved || desktop_scene_dirty || window_dirty || desktop_taskbar_dirty) {
-            gfx_erase_cursor(last_cursor_x, last_cursor_y);
-        }
-
         if (desktop_exit_to_shell) {
             desktop_running = 0;
             gfx_set_output_target(GFX_OUTPUT_FRAMEBUFFER);
@@ -2770,6 +2766,11 @@ void desktop_run(void) {
                 /* System info refreshes on the same 100 Hz second boundary used for uptime/pages. */
                 desktop_info_window->content_dirty = 1;
             }
+        }
+
+        window_dirty = desktop_any_visible_window_dirty();
+        if (mouse_moved || desktop_scene_dirty || window_dirty || desktop_taskbar_dirty) {
+            gfx_erase_cursor(last_cursor_x, last_cursor_y);
         }
 
         if (desktop_scene_dirty) {
@@ -2795,6 +2796,10 @@ void desktop_run(void) {
             gfx_present();
             last_cursor_x = desktop_cursor_x;
             last_cursor_y = desktop_cursor_y;
+        } else if (cursor_drawn == 0u) {
+            gfx_set_cursor(desktop_pick_cursor(desktop_cursor_x, desktop_cursor_y, buttons));
+            gfx_draw_cursor(desktop_cursor_x, desktop_cursor_y);
+            gfx_present();
         }
 
         /* Cap the desktop loop at ~50 FPS on a 100 Hz PIT so idle GUI mode stops burning the whole CPU. */
