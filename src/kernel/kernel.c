@@ -4,6 +4,7 @@
 #include "ata.h"
 #include "audio.h"
 #include "blkdev.h"
+#include "boot_animation.h"
 #include "capabilities.h"
 #include "desktop.h"
 #include "fat32.h"
@@ -19,6 +20,7 @@
 #include "net.h"
 #include "pmm.h"
 #include "pit.h"
+#include "process.h"
 #include "ramdisk.h"
 #include "serial.h"
 #include "userland.h"
@@ -99,6 +101,7 @@ void kmain(uint32_t multiboot_magic, uint32_t multiboot_info_addr) {
 
     gfx_init(multiboot_info_addr);
     serial_print("[coffeeOS] gfx init OK\n");
+    process_init();
 
     pit_init(100u);
     audio_init();
@@ -106,6 +109,7 @@ void kmain(uint32_t multiboot_magic, uint32_t multiboot_info_addr) {
     mouse_init();
     tss_set_kernel_stack(irq_stack_top);
     __asm__ volatile ("sti");
+    boot_animation_run();
     net_init();
     blkdev_init();
     (void)ata_init();

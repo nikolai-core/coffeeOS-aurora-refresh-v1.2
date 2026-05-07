@@ -283,6 +283,8 @@ static void desktop_terminal_scroll(int delta);
 static void desktop_draw_window_controls(struct Window *window, uint32_t title_color);
 static int desktop_any_visible_window_dirty(void);
 static void desktop_begin_busy(uint32_t ticks);
+static void desktop_request_app_redraw(struct App *app);
+static void desktop_mark_animated_apps_dirty(void);
 
 /* Return the fixed 8px bitmap-font width used by the framebuffer text renderer. */
 static int desktop_font_width(void) {
@@ -1225,8 +1227,13 @@ static int desktop_launch_app(int app_index) {
         desktop_begin_busy(10u);
         sound_open_window();
     } else {
+        int was_hidden = window->hidden;
+
         window->hidden = 0;
         window->minimized = 0;
+        if (was_hidden && app->on_init != (void (*)(void))0) {
+            app->on_init();
+        }
         desktop_begin_busy(6u);
         sound_open_window();
     }
@@ -1673,8 +1680,9 @@ static void desktop_draw_icons(void) {
         int iy;
         int iw;
         int ih;
-        uint32_t tile = desktop_launcher_icon_color(i);
+        uint32_t tile;
         uint32_t border = 0x183B4Cu;
+        int cell_x;
         int label_y;
         int text_w;
         int text_x;
@@ -1698,6 +1706,15 @@ static void desktop_draw_icons(void) {
 
         desktop_icon_key_from_title(title, icon_key, sizeof(icon_key));
         icon = icon_assets_find(icon_key);
+        if (icon == (const struct IconAsset *)0
+            && launcher_index >= DESKTOP_BUILTIN_LAUNCHER_COUNT
+            && launcher_index < desktop_launcher_icon_count()) {
+            App *app = app_registry[launcher_index - DESKTOP_BUILTIN_LAUNCHER_COUNT];
+
+            if (app != (App *)0 && app->id != (const char *)0) {
+                icon = icon_assets_find(app->id);
+            }
+        }
 
         gfx_draw_rect(ix, iy, DESKTOP_ICON_TILE_SIZE, DESKTOP_ICON_TILE_SIZE, tile);
         gfx_draw_rect_outline(ix, iy, DESKTOP_ICON_TILE_SIZE, DESKTOP_ICON_TILE_SIZE, border);
@@ -1709,9 +1726,13 @@ static void desktop_draw_icons(void) {
 
         label_y = iy + DESKTOP_ICON_TILE_SIZE + 2;
         text_w = (int)ascii_strlen(title) * desktop_font_width();
-        text_x = ix + (DESKTOP_ICON_TILE_SIZE - text_w) / 2;
-        if (text_x < ix) {
-            text_x = ix;
+        cell_x = ix - ((DESKTOP_ICON_CELL_WIDTH - DESKTOP_ICON_TILE_SIZE) / 2);
+        text_x = cell_x + (DESKTOP_ICON_CELL_WIDTH - text_w) / 2;
+        if (text_x < cell_x) {
+            text_x = cell_x;
+        }
+        if (text_x + text_w > cell_x + DESKTOP_ICON_CELL_WIDTH) {
+            text_x = cell_x + DESKTOP_ICON_CELL_WIDTH - text_w;
         }
         gfx_draw_string_at(text_x, label_y, title, 0xF2FBFFu, DESKTOP_BACKGROUND_COLOR);
     }
@@ -1871,6 +1892,9 @@ static int desktop_window_resize_edges(const struct Window *window, int x, int y
     if (!desktop_window_is_visible(window) || window->maximized) {
         return DESKTOP_RESIZE_NONE;
     }
+    if (window->app != (struct App *)0 && (window->app->flags & APP_FLAG_RESIZABLE) == 0u) {
+        return DESKTOP_RESIZE_NONE;
+    }
     if (x < window->x || y < window->y || x >= window->x + window->width || y >= window->y + window->height) {
         return DESKTOP_RESIZE_NONE;
     }
@@ -1900,9 +1924,22 @@ static void desktop_resize_window_to_cursor(struct Window *window, int x, int y)
     int nh;
     int max_w;
     int max_h;
+    int min_w;
+    int min_h;
 
     if (window == (struct Window *)0 || desktop_resize_edges == DESKTOP_RESIZE_NONE) {
         return;
+    }
+
+    min_w = DESKTOP_WINDOW_MIN_WIDTH;
+    min_h = DESKTOP_WINDOW_MIN_HEIGHT;
+    if (window->app != (struct App *)0) {
+        if (window->app->min_w > min_w) {
+            min_w = window->app->min_w;
+        }
+        if (window->app->min_h > min_h) {
+            min_h = window->app->min_h;
+        }
     }
 
     dx = x - desktop_resize_start_x;
@@ -1915,8 +1952,8 @@ static void desktop_resize_window_to_cursor(struct Window *window, int x, int y)
     if ((desktop_resize_edges & DESKTOP_RESIZE_LEFT) != 0) {
         nx = desktop_resize_orig_x + dx;
         nw = desktop_resize_orig_w - dx;
-        if (nw < DESKTOP_WINDOW_MIN_WIDTH) {
-            nw = DESKTOP_WINDOW_MIN_WIDTH;
+        if (nw < min_w) {
+            nw = min_w;
             nx = desktop_resize_orig_x + desktop_resize_orig_w - nw;
         }
         if (nx < 0) {
@@ -1930,15 +1967,15 @@ static void desktop_resize_window_to_cursor(struct Window *window, int x, int y)
         if (nw > max_w) {
             nw = max_w;
         }
-        if (nw < DESKTOP_WINDOW_MIN_WIDTH) {
-            nw = DESKTOP_WINDOW_MIN_WIDTH;
+        if (nw < min_w) {
+            nw = min_w;
         }
     }
     if ((desktop_resize_edges & DESKTOP_RESIZE_TOP) != 0) {
         ny = desktop_resize_orig_y + dy;
         nh = desktop_resize_orig_h - dy;
-        if (nh < DESKTOP_WINDOW_MIN_HEIGHT) {
-            nh = DESKTOP_WINDOW_MIN_HEIGHT;
+        if (nh < min_h) {
+            nh = min_h;
             ny = desktop_resize_orig_y + desktop_resize_orig_h - nh;
         }
         if (ny < 0) {
@@ -1952,8 +1989,8 @@ static void desktop_resize_window_to_cursor(struct Window *window, int x, int y)
         if (nh > max_h) {
             nh = max_h;
         }
-        if (nh < DESKTOP_WINDOW_MIN_HEIGHT) {
-            nh = DESKTOP_WINDOW_MIN_HEIGHT;
+        if (nh < min_h) {
+            nh = min_h;
         }
     }
 
@@ -1965,11 +2002,11 @@ static void desktop_resize_window_to_cursor(struct Window *window, int x, int y)
     if (nh > max_h) {
         nh = max_h;
     }
-    if (nw < DESKTOP_WINDOW_MIN_WIDTH) {
-        nw = DESKTOP_WINDOW_MIN_WIDTH;
+    if (nw < min_w) {
+        nw = min_w;
     }
-    if (nh < DESKTOP_WINDOW_MIN_HEIGHT) {
-        nh = DESKTOP_WINDOW_MIN_HEIGHT;
+    if (nh < min_h) {
+        nh = min_h;
     }
 
     window->x = nx;
@@ -2356,7 +2393,9 @@ static int desktop_handle_mouse(int x, int y, int buttons) {
                     && x >= client_x && y >= client_y
                     && x < client_x + client_w && y < client_y + client_h) {
                     sound_click();
+                    app_set_draw_context_for(window_under_cursor->app, client_x, client_y, client_w, client_h);
                     window_under_cursor->app->on_click(x - client_x, y - client_y, buttons & 0x07);
+                    app_clear_draw_context();
                     window_under_cursor->content_dirty = 1;
                 }
             }
@@ -2499,7 +2538,7 @@ static void desktop_draw_window_contents(struct Window *window, int force_conten
         int client_h;
 
         if (desktop_get_client_rect(window, &client_x, &client_y, &client_w, &client_h)) {
-            app_set_draw_context(client_x, client_y, client_w, client_h);
+            app_set_draw_context_for(window->app, client_x, client_y, client_w, client_h);
             window->app->on_draw(client_x, client_y, client_w, client_h);
             app_clear_draw_context();
         }
@@ -2596,7 +2635,29 @@ static void desktop_init(void) {
     desktop_clock_window =
         desktop_create_window(440, 180, 200, 60, "Clock", 0xE2B36Eu, desktop_draw_clock,
                               (struct App *)0);
-    (void)desktop_focus_window(desktop_terminal_window);
+    if (desktop_terminal_window != (struct Window *)0) {
+        desktop_terminal_window->hidden = 1;
+        desktop_terminal_window->focused = 0;
+    }
+    if (desktop_info_window != (struct Window *)0) {
+        desktop_info_window->hidden = 1;
+        desktop_info_window->focused = 0;
+    }
+    if (desktop_clock_window != (struct Window *)0) {
+        desktop_clock_window->hidden = 1;
+        desktop_clock_window->focused = 0;
+    }
+    if (desktop_launch_app_by_title("Welcome")) {
+        struct Window *welcome_window = desktop_focused_window();
+
+        if (welcome_window != (struct Window *)0) {
+            desktop_move_window(welcome_window,
+                                (gfx_get_width() - welcome_window->width) / 2,
+                                ((gfx_get_height() - DESKTOP_TASKBAR_HEIGHT)
+                                 - welcome_window->height) / 2);
+            welcome_window->content_dirty = 1;
+        }
+    }
     if (desktop_terminal_window != (struct Window *)0) {
         desktop_terminal_window->content_dirty = 1;
     }
@@ -2605,6 +2666,43 @@ static void desktop_init(void) {
     }
     if (desktop_clock_window != (struct Window *)0) {
         desktop_clock_window->content_dirty = 1;
+    }
+}
+
+static void desktop_request_app_redraw(struct App *app) {
+    uint32_t i;
+
+    if (app == (struct App *)0) {
+        return;
+    }
+
+    for (i = 0u; i < desktop_window_count; i++) {
+        struct Window *window = desktop_draw_order[i];
+
+        if (window != (struct Window *)0 && window->app == app) {
+            window->content_dirty = 1;
+            desktop_scene_dirty = 1;
+            if (!window->hidden && !window->minimized) {
+                desktop_taskbar_dirty = 1;
+            }
+            return;
+        }
+    }
+}
+
+static void desktop_mark_animated_apps_dirty(void) {
+    uint32_t i;
+
+    for (i = 0u; i < desktop_window_count; i++) {
+        struct Window *window = desktop_draw_order[i];
+
+        if (window != (struct Window *)0
+            && window->app != (struct App *)0
+            && (window->app->flags & APP_FLAG_ANIMATED) != 0u
+            && !window->hidden
+            && !window->minimized) {
+            window->content_dirty = 1;
+        }
     }
 }
 
@@ -2680,6 +2778,7 @@ void desktop_run(void) {
     gfx_present();
 
     app_registry_init();
+    app_set_redraw_callback(desktop_request_app_redraw);
     desktop_init();
     desktop_begin_busy(12u);
     gfx_set_output_target(GFX_OUTPUT_GUI_TERMINAL);
@@ -2734,7 +2833,16 @@ void desktop_run(void) {
             if (focused_window != (struct Window *)0
                 && focused_window->app != (struct App *)0
                 && focused_window->app->on_key != (void (*)(char))0) {
+                int client_x;
+                int client_y;
+                int client_w;
+                int client_h;
+
+                if (desktop_get_client_rect(focused_window, &client_x, &client_y, &client_w, &client_h)) {
+                    app_set_draw_context_for(focused_window->app, client_x, client_y, client_w, client_h);
+                }
                 focused_window->app->on_key(key);
+                app_clear_draw_context();
                 focused_window->content_dirty = 1;
             } else if (desktop_terminal_window != (struct Window *)0
                 && desktop_terminal_window->focused
@@ -2768,6 +2876,7 @@ void desktop_run(void) {
             }
         }
 
+        desktop_mark_animated_apps_dirty();
         window_dirty = desktop_any_visible_window_dirty();
         if (mouse_moved || desktop_scene_dirty || window_dirty || desktop_taskbar_dirty) {
             gfx_erase_cursor(last_cursor_x, last_cursor_y);

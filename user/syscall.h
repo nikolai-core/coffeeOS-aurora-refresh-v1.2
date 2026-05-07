@@ -51,6 +51,26 @@ static inline uint32_t sys_gettime(void) {
     return ret;
 }
 
+static inline uint32_t sys_getpid(void) {
+    uint32_t ret;
+    __asm__ volatile (
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(SYS_GETPID)
+        : "memory"
+    );
+    return ret;
+}
+
+static inline void sys_yield(void) {
+    __asm__ volatile (
+        "int $0x80"
+        :
+        : "a"(SYS_YIELD)
+        : "memory"
+    );
+}
+
 static inline int sys_audio_play(uint32_t freq, uint32_t duration_ms, uint32_t wave) {
     int ret;
     __asm__ volatile (

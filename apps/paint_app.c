@@ -116,29 +116,25 @@ static void paint_draw_toolbar(void) {
     int i;
 
     app_draw_rect(PAINT_PADDING, toolbar_y, PAINT_CANVAS_W, PAINT_TOOLBAR_H, PAINT_PANEL);
-    app_draw_hline(PAINT_PADDING, toolbar_y, PAINT_CANVAS_W, PAINT_PANEL_BORDER);
-    app_draw_hline(PAINT_PADDING, toolbar_y + PAINT_TOOLBAR_H - 1, PAINT_CANVAS_W, PAINT_PANEL_BORDER);
-    app_draw_vline(PAINT_PADDING, toolbar_y, PAINT_TOOLBAR_H, PAINT_PANEL_BORDER);
-    app_draw_vline(PAINT_PADDING + PAINT_CANVAS_W - 1, toolbar_y, PAINT_TOOLBAR_H, PAINT_PANEL_BORDER);
+    app_draw_border(PAINT_PADDING, toolbar_y, PAINT_CANVAS_W, PAINT_TOOLBAR_H, PAINT_PANEL_BORDER);
 
     app_draw_string(PAINT_PADDING + 8, toolbar_y + 14, "Paint", PAINT_TEXT, PAINT_PANEL);
 
     for (i = 0; i < (int)(sizeof(paint_swatches) / sizeof(paint_swatches[0])); i++) {
         uint32_t border = (paint_swatches[i].color == current_color) ? PAINT_ACTIVE_BORDER : PAINT_PANEL_BORDER;
+        int lift = (paint_swatches[i].color == current_color) ? app_anim_pingpong(80u, 3) : 0;
 
-        app_draw_rect(paint_swatches[i].x, swatch_y, PAINT_SWATCH_SIZE, PAINT_SWATCH_SIZE, paint_swatches[i].color);
-        app_draw_hline(paint_swatches[i].x, swatch_y, PAINT_SWATCH_SIZE, border);
-        app_draw_hline(paint_swatches[i].x, swatch_y + PAINT_SWATCH_SIZE - 1, PAINT_SWATCH_SIZE, border);
-        app_draw_vline(paint_swatches[i].x, swatch_y, PAINT_SWATCH_SIZE, border);
-        app_draw_vline(paint_swatches[i].x + PAINT_SWATCH_SIZE - 1, swatch_y, PAINT_SWATCH_SIZE, border);
+        app_draw_rect(paint_swatches[i].x, swatch_y - lift, PAINT_SWATCH_SIZE, PAINT_SWATCH_SIZE, paint_swatches[i].color);
+        app_draw_border(paint_swatches[i].x, swatch_y - lift, PAINT_SWATCH_SIZE, PAINT_SWATCH_SIZE, border);
     }
 
-    app_draw_rect(paint_clear_x(), toolbar_y + 8, PAINT_CLEAR_W, 26, PAINT_CLEAR_BG);
-    app_draw_hline(paint_clear_x(), toolbar_y + 8, PAINT_CLEAR_W, PAINT_CLEAR_BORDER);
-    app_draw_hline(paint_clear_x(), toolbar_y + 33, PAINT_CLEAR_W, PAINT_CLEAR_BORDER);
-    app_draw_vline(paint_clear_x(), toolbar_y + 8, 26, PAINT_CLEAR_BORDER);
-    app_draw_vline(paint_clear_x() + PAINT_CLEAR_W - 1, toolbar_y + 8, 26, PAINT_CLEAR_BORDER);
-    app_draw_string(paint_clear_x() + 10, toolbar_y + 13, "Clear", PAINT_TEXT, PAINT_CLEAR_BG);
+    app_draw_rect(PAINT_PADDING + 200, toolbar_y + 14, 20, 14, current_color);
+    app_draw_border(PAINT_PADDING + 200, toolbar_y + 14, 20, 14,
+                    app_blend_color(PAINT_PANEL_BORDER, PAINT_ACTIVE_BORDER,
+                                    (uint32_t)app_anim_pingpong(90u, 16), 16u));
+
+    app_draw_button(paint_clear_x(), toolbar_y + 8, PAINT_CLEAR_W, 26, "Clear",
+                    PAINT_CLEAR_BG, PAINT_CLEAR_BORDER, PAINT_TEXT);
 }
 
 static void paint_draw(int win_x, int win_y, int win_w, int win_h) {
@@ -158,13 +154,13 @@ static void paint_draw(int win_x, int win_y, int win_w, int win_h) {
         }
     }
 
-    app_draw_hline(paint_canvas_x() - 1, paint_canvas_y() - 1, PAINT_CANVAS_W + 2, PAINT_CANVAS_BORDER);
-    app_draw_hline(paint_canvas_x() - 1, paint_canvas_y() + PAINT_CANVAS_H, PAINT_CANVAS_W + 2, PAINT_CANVAS_BORDER);
-    app_draw_vline(paint_canvas_x() - 1, paint_canvas_y() - 1, PAINT_CANVAS_H + 2, PAINT_CANVAS_BORDER);
-    app_draw_vline(paint_canvas_x() + PAINT_CANVAS_W, paint_canvas_y() - 1, PAINT_CANVAS_H + 2, PAINT_CANVAS_BORDER);
+    app_draw_border(paint_canvas_x() - 1, paint_canvas_y() - 1,
+                    PAINT_CANVAS_W + 2, PAINT_CANVAS_H + 2, PAINT_CANVAS_BORDER);
 
     paint_draw_toolbar();
-    app_draw_string(PAINT_PADDING, paint_toolbar_y() + PAINT_TOOLBAR_H + 6,
+    app_draw_rect(PAINT_PADDING + app_anim_saw(160u, PAINT_CANVAS_W - 32),
+                  paint_toolbar_y() + PAINT_TOOLBAR_H + 4, 32, 2, current_color);
+    app_draw_string(PAINT_PADDING, paint_toolbar_y() + PAINT_TOOLBAR_H + 8,
                     "1-5 colors, C clears", PAINT_TEXT_DIM, PAINT_BG);
 }
 
@@ -225,5 +221,9 @@ App paint_app = {
     .on_draw = paint_draw,
     .on_key = paint_key,
     .on_click = paint_click,
-    .on_close = paint_close
+    .on_close = paint_close,
+    .id = "paint",
+    .flags = APP_FLAG_SINGLE_INSTANCE | APP_FLAG_ANIMATED,
+    .min_w = 324,
+    .min_h = 286
 };

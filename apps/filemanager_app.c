@@ -115,25 +115,6 @@ static const char *fm_extension(const char *name) {
     return "";
 }
 
-/* Format size into B / KB / MB — writes into out[out_len]. */
-static void fm_format_size(uint32_t size, char *out, uint32_t out_len) {
-    char buf[12];
-    uint32_t n = 0u, i = 0u, value;
-    const char *suffix;
-
-    if (size >= 1024u * 1024u) { value = size / (1024u * 1024u); suffix = "MB"; }
-    else if (size >= 1024u)    { value = size / 1024u;            suffix = "KB"; }
-    else                       { value = size;                     suffix = "B";  }
-
-    if (value == 0u) buf[n++] = '0';
-    while (value != 0u && n < sizeof(buf) - 1u) {
-        buf[n++] = (char)('0' + (value % 10u)); value /= 10u;
-    }
-    while (n > 0u && i + 1u < out_len) out[i++] = buf[--n];
-    { uint32_t s = 0u; while (suffix[s] && i + 1u < out_len) out[i++] = suffix[s++]; }
-    out[i] = '\0';
-}
-
 /* ── Icon renderers ─────────────────────────────────────────────── */
 
 /* Draw a small folder icon at (x,y) relative to client area. */
@@ -223,19 +204,8 @@ static void fm_clamp_scroll(int visible_rows) {
 
 static void fm_draw_button(int x, int y, int w, int h,
                             const char *label, int hover) {
-    uint32_t bg = hover ? FM_BTN_HOVER : FM_BTN_BG;
-    int lx, tw;
-
-    app_draw_rect(x, y, w, h, bg);
-    /* 1px border */
-    app_draw_hline(x,     y,         w, FM_BTN_BORDER);
-    app_draw_hline(x,     y + h - 1, w, FM_BTN_BORDER);
-    app_draw_vline(x,     y,         h, FM_BTN_BORDER);
-    app_draw_vline(x + w - 1, y,     h, FM_BTN_BORDER);
-    /* center label */
-    tw = (int)(ascii_strlen(label) * 8);
-    lx = x + (w - tw) / 2;
-    app_draw_string(lx, y + (h - 16) / 2 + 1, label, FM_BTN_TEXT, bg);
+    app_draw_button(x, y, w, h, label, hover ? FM_BTN_HOVER : FM_BTN_BG,
+                    FM_BTN_BORDER, FM_BTN_TEXT);
 }
 
 /* ── App callbacks ──────────────────────────────────────────────── */
@@ -278,6 +248,8 @@ static void fm_on_draw(int win_x, int win_y, int win_w, int win_h) {
     /* teal left accent */
     app_draw_vline(0, 0, FM_ADDR_H, FM_ACCENT);
     app_draw_vline(1, 0, FM_ADDR_H, FM_ACCENT);
+    app_draw_rect(app_anim_saw(180u, win_w + 32) - 32, FM_ADDR_H - 3, 32, 2,
+                  app_blend_color(FM_ADDR_BG, FM_ACCENT, 1u, 2u));
     app_draw_string(10, (FM_ADDR_H - 16) / 2 + 1, fm_cwd, FM_ADDR_TEXT, FM_ADDR_BG);
     /* bottom separator */
     app_draw_hline(0, FM_ADDR_H - 1, win_w, FM_ACCENT);
@@ -330,9 +302,11 @@ static void fm_on_draw(int win_x, int win_y, int win_w, int win_h) {
 
         /* selection accent stripe on left edge */
         if (is_sel) {
+            uint32_t stripe = app_blend_color(FM_SELECT_STRIPE, FM_ACCENT,
+                                              (uint32_t)app_anim_pingpong(90u, 20), 20u);
             app_draw_vline(0, y, FM_ROW_H, FM_SELECT_STRIPE);
-            app_draw_vline(1, y, FM_ROW_H, FM_SELECT_STRIPE);
-            app_draw_vline(2, y, FM_ROW_H, FM_ACCENT);
+            app_draw_vline(1, y, FM_ROW_H, stripe);
+            app_draw_vline(2, y, FM_ROW_H, stripe);
         }
 
         /* icon */
@@ -364,8 +338,8 @@ static void fm_on_draw(int win_x, int win_y, int win_w, int win_h) {
         /* size */
         if (!is_dir) {
             char size_text[16];
-            fm_format_size(fm_entries[entry_index].size,
-                           size_text, sizeof(size_text));
+            app_format_size(fm_entries[entry_index].size,
+                            size_text, sizeof(size_text));
             app_draw_string(col_size, y + (FM_ROW_H - 16) / 2 + 1,
                             size_text,
                             is_sel ? text_col : FM_TEXT_DIM, row_bg);
@@ -407,7 +381,7 @@ static void fm_on_draw(int win_x, int win_y, int win_w, int win_h) {
         if (vol != (Fat32Volume *)0)
             free_bytes = vol->free_clusters * vol->bytes_per_cluster;
 
-        fm_format_size(free_bytes, free_text, sizeof(free_text));
+        app_format_size(free_bytes, free_text, sizeof(free_text));
 
         /* build count string */
         value = (uint32_t)fm_entry_count; n = 0u;
@@ -435,7 +409,7 @@ static void fm_on_draw(int win_x, int win_y, int win_w, int win_h) {
             const char *hint = fm_entries[fm_selected].type == VFS_TYPE_DIR
                                ? "Double-click to open"
                                : "Double-click to open in Notepad";
-            int hint_x = win_w - (int)(ascii_strlen(hint) * 8) - 8;
+            int hint_x = win_w - app_text_width(hint) - 8;
             if (hint_x > win_w / 2)
                 app_draw_string(hint_x,
                                 win_h - FM_STATUS_H + (FM_STATUS_H - 16) / 2 + 1,
@@ -550,15 +524,19 @@ static void fm_on_close(void) {
 /* ── App descriptor ──────────────────────────────────────────────── */
 
 App filemanager_app = {
-    "Files",
-    60,
-    100,
-    480,
-    360,
-    FM_BG,
-    fm_on_init,
-    fm_on_draw,
-    fm_on_key,
-    fm_on_click,
-    fm_on_close
+    .title = "Files",
+    .x = 60,
+    .y = 100,
+    .w = 480,
+    .h = 360,
+    .bg_color = FM_BG,
+    .on_init = fm_on_init,
+    .on_draw = fm_on_draw,
+    .on_key = fm_on_key,
+    .on_click = fm_on_click,
+    .on_close = fm_on_close,
+    .id = "files",
+    .flags = APP_FLAG_SINGLE_INSTANCE | APP_FLAG_RESIZABLE | APP_FLAG_ANIMATED,
+    .min_w = 360,
+    .min_h = 240
 };

@@ -199,6 +199,9 @@ static void print_sysinfo(void) {
 
     print("System: coffeeOS Developer Preview [Beta]\n");
     print("Mode: userland shell (ring 3)\n");
+    print("PID: ");
+    write_u32(sys_getpid());
+    print("\n");
     print("Prompt: user>\n");
     print("History slots: ");
     write_u32(SHELL_HISTORY_SIZE);

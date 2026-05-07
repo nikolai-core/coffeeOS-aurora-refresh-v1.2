@@ -24,32 +24,6 @@ static void netmon_draw_pair(int x, int y, const char *label, const char *value,
     app_draw_string(x + 72, y, value, value_color, NETMON_BG);
 }
 
-/* Append one unsigned decimal value to a fixed app buffer. */
-static void netmon_append_u32(char *dst, uint32_t max_len, uint32_t value) {
-    char digits[10];
-    uint32_t len = 0u;
-    uint32_t count = 0u;
-
-    while (dst[len] != '\0') {
-        len++;
-    }
-    if (value == 0u) {
-        if (len + 1u < max_len) {
-            dst[len] = '0';
-            dst[len + 1u] = '\0';
-        }
-        return;
-    }
-    while (value != 0u && count < sizeof(digits)) {
-        digits[count++] = (char)('0' + (value % 10u));
-        value /= 10u;
-    }
-    while (count != 0u && len + 1u < max_len) {
-        dst[len++] = digits[--count];
-    }
-    dst[len] = '\0';
-}
-
 /* Render the network monitor app from the current stack state. */
 static void netmon_draw(int win_x, int win_y, int win_w, int win_h) {
     NetInterface *iface = netif_get(0);
@@ -66,8 +40,13 @@ static void netmon_draw(int win_x, int win_y, int win_w, int win_h) {
     app_draw_hline(0, 240, win_w, NETMON_BORDER);
 
     app_draw_string(12, 10, "Interface", NETMON_LABEL, NETMON_BG);
-    app_draw_rect(330, 12, 10, 10,
-                  iface == (NetInterface *)0 ? NETMON_NONE : (iface->up ? NETMON_UP : NETMON_DOWN));
+    {
+        int pulse = app_anim_pingpong(90u, 3);
+        uint32_t lamp = iface == (NetInterface *)0 ? NETMON_NONE : (iface->up ? NETMON_UP : NETMON_DOWN);
+        app_draw_rect(330 - pulse, 12 - pulse, 10 + (pulse * 2), 10 + (pulse * 2),
+                      app_blend_color(NETMON_BG, lamp, 1u, 3u));
+        app_draw_rect(330, 12, 10, 10, lamp);
+    }
     if (iface == (NetInterface *)0) {
         app_draw_string(12, 30, "No NIC", NETMON_VALUE, NETMON_BG);
     } else {
@@ -82,11 +61,13 @@ static void netmon_draw(int win_x, int win_y, int win_w, int win_h) {
         net_format_ip(iface->ip, text, sizeof(text));
         netmon_draw_pair(12, 92, "IPv4", text, NETMON_IP);
         text[0] = '\0';
-        netmon_append_u32(text, sizeof(text), (uint32_t)iface->rx_packets);
+        app_append_u32(text, sizeof(text), (uint32_t)iface->rx_packets);
         netmon_draw_pair(12, 110, "RX packets", text, NETMON_VALUE);
         text[0] = '\0';
-        netmon_append_u32(text, sizeof(text), (uint32_t)iface->tx_packets);
+        app_append_u32(text, sizeof(text), (uint32_t)iface->tx_packets);
         netmon_draw_pair(200, 110, "TX packets", text, NETMON_VALUE);
+        app_draw_rect(12, 130, (int)(iface->rx_packets % 120u), 4, NETMON_IP);
+        app_draw_rect(200, 130, (int)(iface->tx_packets % 120u), 4, NETMON_UP);
     }
 
     app_draw_string(12, 150, "ARP Cache", NETMON_LABEL, NETMON_BG);
@@ -102,6 +83,7 @@ static void netmon_draw(int win_x, int win_y, int win_w, int win_h) {
     }
 
     app_draw_rect(0, 240, win_w, 60, NETMON_LOG_BG);
+    app_draw_rect(app_anim_saw(160u, win_w + 48) - 48, 240, 48, 1, NETMON_LOG_TEXT);
     app_draw_string(12, 246, "Activity", NETMON_LABEL, NETMON_LOG_BG);
     for (i = 0u; i < 4u; i++) {
         const char *line;
@@ -144,5 +126,9 @@ App netmon_app = {
     .on_draw = netmon_draw,
     .on_key = netmon_key,
     .on_click = netmon_click,
-    .on_close = netmon_close
+    .on_close = netmon_close,
+    .id = "network",
+    .flags = APP_FLAG_SINGLE_INSTANCE | APP_FLAG_RESIZABLE | APP_FLAG_ANIMATED,
+    .min_w = 360,
+    .min_h = 260
 };

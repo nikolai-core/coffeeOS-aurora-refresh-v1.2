@@ -1,6 +1,6 @@
 # coffeeOS Aurora Refresh v1.4.0 Architecture
 
-This document describes the structure of the Aurora Refresh tree as it exists for v1.4.0. It is intentionally practical: it focuses on boot order, subsystem boundaries, the framebuffer compositor, and the desktop redraw contract that now includes the cursor ghost fix.
+This document describes the structure of the Aurora Refresh tree as it exists for v1.4.0. It is intentionally practical: it focuses on boot order, subsystem boundaries, the framebuffer compositor, the process isolation model, and the desktop redraw contract.
 
 ## System overview
 
@@ -10,12 +10,15 @@ coffeeOS is a freestanding 32-bit x86 operating system with:
 - Higher-half kernel mapping
 - GDT and IDT setup
 - Paging and physical memory management
+- Per-process address spaces with CR3 switching
+- TSS-based kernel stack switching for user processes
 - Software framebuffer compositor
 - PS/2 keyboard and mouse input
 - FAT32-backed storage and VFS
 - RTL8139 networking
 - SB16 and speaker audio paths
 - A desktop shell with built-in apps
+- Kernel panic debugger with register/state dumps
 
 ## Boot path
 
@@ -37,8 +40,8 @@ The runtime entry sequence is:
 | Path | Responsibility |
 | --- | --- |
 | `src/boot/` | Early bootstrap and Multiboot entry |
-| `src/kernel/` | Kernel init and system bring-up |
-| `cpu/` | Descriptor tables and interrupt stubs |
+| `src/kernel/` | Kernel init, system bring-up, process management |
+| `cpu/` | Descriptor tables, interrupt stubs, panic handler |
 | `mem/`, `mm/` | Physical memory, virtual memory, paging |
 | `drivers/` | Graphics, ATA, input, timer, serial, PCI, audio, network device drivers |
 | `desktop/` | Desktop shell, window manager, taskbar, icons, compositor control |
@@ -47,6 +50,40 @@ The runtime entry sequence is:
 | `net/` | Ethernet and L3/L4 protocol stack |
 | `audio/` | Higher-level audio synthesis and output helpers |
 | `user/` | Userland program image and syscall-facing runtime bits |
+
+## Process model
+
+The kernel implements process isolation using per-process page directories and TSS-based kernel stack switching.
+
+### Isolation mechanism
+
+- Each process has a dedicated physical page directory (CR3)
+- The Task State Segment (TSS) holds the kernel stack pointer (esp0) for the current process
+- When a user process triggers an interrupt or syscalls, the CPU automatically switches to the kernel stack from TSS
+- Process states: UNUSED, READY, RUNNING, EXITED, FAULTED
+
+### Kernel panic debugger
+
+The `cpu/panic.c` module provides comprehensive crash diagnostics:
+
+- Register dump (EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP, CS, EIP, EFLAGS, DS, ES, FS, GS, UserESP, SS)
+- Current PID and process state
+- Stack trace via EBP chain traversal
+- CR2 register value on page faults with error code breakdown
+- Both serial and framebuffer output for debugging
+
+## Syscall interface
+
+User processes communicate with the kernel through the syscall layer at interrupt 128 (0x80). Key syscalls include:
+
+- `SYS_GETPID` (31): Returns the current process PID
+- `SYS_YIELD` (32): Yields CPU time to other processes
+- File operations: open, close, read, write, seek, mkdir, delete, stat, listdir
+- Network operations: socket, bind, listen, accept, connect, send, recv, dns, ping, tcp_*
+
+## FAT32 LFN decoding
+
+FAT32 long filename (LFN) entries use packed UTF-16 structures. The current implementation safely decodes LFN entries by copying field data into aligned local buffers before processing, avoiding potential alignment issues with packed struct members.
 
 ## Graphics pipeline
 
@@ -203,6 +240,8 @@ As of v1.4.0, the registered app set is:
 ## Operational notes
 
 - The project is freestanding and intentionally avoids libc/runtime dependencies
+- Process isolation relies on correct CR3 switching and TSS esp0 management
 - The framebuffer path relies on disciplined dirty-region tracking
 - Cursor correctness depends on redraw ordering, not just sprite draw/erase logic
 - Persistent storage correctness depends on calling `sync` or rebooting cleanly before closing QEMU
+- Kernel panics output detailed register/state information to both serial and framebuffer

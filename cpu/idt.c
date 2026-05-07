@@ -8,6 +8,7 @@
 #include "net.h"
 #include "net/socket_abi.h"
 #include "pit.h"
+#include "process.h"
 #include "rtl8139.h"
 #include "serial.h"
 #include "sb16.h"
@@ -20,6 +21,7 @@
 #include "dns.h"
 #include "icmp.h"
 #include "netif.h"
+#include "panic.h"
 #include "tcp.h"
 
 #define AUTO_SYNC 1
@@ -35,31 +37,6 @@ struct __attribute__((packed)) IDTEntry {
 struct __attribute__((packed)) IDTPointer {
     uint16_t limit;
     uint32_t base;
-};
-
-struct InterruptFrame {
-    uint32_t gs;
-    uint32_t fs;
-    uint32_t es;
-    uint32_t ds;
-
-    uint32_t edi;
-    uint32_t esi;
-    uint32_t ebp;
-    uint32_t esp;
-    uint32_t ebx;
-    uint32_t edx;
-    uint32_t ecx;
-    uint32_t eax;
-
-    uint32_t int_no;
-    uint32_t err_code;
-
-    uint32_t eip;
-    uint32_t cs;
-    uint32_t eflags;
-    uint32_t useresp;
-    uint32_t ss;
 };
 
 extern void idt_load(uint32_t idt_ptr);
@@ -512,6 +489,16 @@ static void syscall_dispatch(struct InterruptFrame *frame) {
         return;
     }
 
+    if (frame->eax == SYS_GETPID) {
+        frame->eax = process_current_pid();
+        return;
+    }
+
+    if (frame->eax == SYS_YIELD) {
+        frame->eax = 0u;
+        return;
+    }
+
     frame->eax = 0xFFFFFFFFu;
 }
 
@@ -528,46 +515,34 @@ void isr_dispatch(struct InterruptFrame *frame) {
                 return;
             }
 
-            serial_print("PAGE FAULT (unhandled)\n");
-            serial_print("CR2: ");
-            serial_write_hex(cr2);
-            serial_print("\nEIP: ");
-            serial_write_hex(frame->eip);
-            serial_print("\nERR: ");
-            serial_write_hex(frame->err_code);
-            serial_print("\nCR3: ");
-            serial_write_hex(vmm_get_cr3());
-            serial_print("\nMODE: ");
-            serial_write_hex(frame->cs & 3u);
-            serial_print("\nFLAGS: P=");
-            serial_write_hex(frame->err_code & 1u);
-            serial_print(" W=");
-            serial_write_hex((frame->err_code >> 1) & 1u);
-            serial_print(" U=");
-            serial_write_hex((frame->err_code >> 2) & 1u);
-            serial_print(" RSVD=");
-            serial_write_hex((frame->err_code >> 3) & 1u);
-            serial_print(" I=");
-            serial_write_hex((frame->err_code >> 4) & 1u);
-            serial_print("\nPID: 0 (no scheduler yet)\nSystem halted.\n");
+            if ((frame->cs & 3u) == 3u && process_current() != (struct Process *)0) {
+                serial_print("USER PAGE FAULT: terminating process\n");
+                serial_print("CR2: ");
+                serial_write_hex(cr2);
+                serial_print(" EIP: ");
+                serial_write_hex(frame->eip);
+                serial_print(" ERR: ");
+                serial_write_hex(frame->err_code);
+                serial_print("\n");
+                userland_fault_current_process(0x80u | frame->int_no);
+                return;
+            }
 
-            gfx_print("PAGE FAULT (unhandled)\nCR2: ");
-            gfx_write_hex(cr2);
-            gfx_print("\nEIP: ");
-            gfx_write_hex(frame->eip);
-            gfx_print("\nERR: ");
-            gfx_write_hex(frame->err_code);
-            gfx_print("\nSystem halted.");
-
+            panic_dump(frame, cr2);
             for (;;) {
                 __asm__ volatile ("cli; hlt");
             }
         }
 
-        gfx_print("CPU EXCEPTION: ");
-        gfx_write_hex(frame->int_no);
-        gfx_print("\nSystem halted.");
+        if ((frame->cs & 3u) == 3u && process_current() != (struct Process *)0) {
+            serial_print("USER EXCEPTION: terminating process int=");
+            serial_write_hex(frame->int_no);
+            serial_print("\n");
+            userland_fault_current_process(0x80u | frame->int_no);
+            return;
+        }
 
+        panic_dump(frame, 0u);
         for (;;) {
             __asm__ volatile ("cli; hlt");
         }

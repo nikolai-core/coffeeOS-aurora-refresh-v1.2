@@ -20,11 +20,14 @@ build:
     mkdir -p {{build_dir}}
     python3 tools/generate_icons.py icons {{build_dir}}/icon_assets.c
     python3 tools/generate_cursors.py cursors {{build_dir}}/cursor_assets.c
+    python3 tools/generate_boot_logo.py assets/boot_logo.jpg {{build_dir}}/boot_logo_asset.c
     gcc {{cflags}} {{inc_kernel}} -c src/boot/boot.s -o {{build_dir}}/boot.o
     gcc {{cflags}} {{inc_kernel}} -c src/kernel/kernel.c -o {{build_dir}}/kernel.o
+    gcc {{cflags}} {{inc_kernel}} -c src/kernel/process.c -o {{build_dir}}/process.o
     gcc {{cflags}} {{inc_kernel}} -c src/kernel/userland.c -o {{build_dir}}/userland.o
     gcc {{cflags}} {{inc_kernel}} -c cpu/gdt.c -o {{build_dir}}/gdt.o
     gcc {{cflags}} {{inc_kernel}} -c cpu/idt.c -o {{build_dir}}/idt.o
+    gcc {{cflags}} {{inc_kernel}} -c cpu/panic.c -o {{build_dir}}/panic.o
     gcc {{cflags}} {{inc_kernel}} -c drivers/gfx.c -o {{build_dir}}/gfx.o
     gcc {{cflags}} {{inc_kernel}} -c drivers/keyboard.c -o {{build_dir}}/keyboard.o
     gcc {{cflags}} {{inc_kernel}} -c drivers/mouse.c -o {{build_dir}}/mouse.o
@@ -57,6 +60,8 @@ build:
     gcc {{cflags}} {{inc_kernel}} -c fs/vfs.c -o {{build_dir}}/vfs.o
     gcc {{cflags}} {{inc_kernel}} -c {{build_dir}}/icon_assets.c -o {{build_dir}}/icon_assets.o
     gcc {{cflags}} {{inc_kernel}} -c {{build_dir}}/cursor_assets.c -o {{build_dir}}/cursor_assets.o
+    gcc {{cflags}} {{inc_kernel}} -c {{build_dir}}/boot_logo_asset.c -o {{build_dir}}/boot_logo_asset.o
+    gcc {{cflags}} {{inc_kernel}} -c desktop/boot_animation.c -o {{build_dir}}/boot_animation.o
     gcc {{cflags}} {{inc_kernel}} -c desktop/desktop.c -o {{build_dir}}/desktop.o
     for src in apps/*.c; do gcc {{cflags}} {{inc_kernel}} -c "$src" -o {{build_dir}}/"$(basename "${src%.c}")".o; done
     gcc {{cflags}} {{inc_kernel}} -c kshell.c -o {{build_dir}}/kshell.o
@@ -65,7 +70,7 @@ build:
     gcc {{cflags}} {{inc_kernel}} -c mm/paging.c -o {{build_dir}}/paging.o
     gcc {{cflags}} {{inc_kernel}} -c mm/vm.c -o {{build_dir}}/vm.o
     gcc {{cflags}} {{inc_kernel}} -c cpu/interrupt.s -o {{build_dir}}/interrupt.o
-    ld -m elf_i386 -T linker/linker.ld -o {{build_dir}}/coffeeos.elf {{build_dir}}/boot.o {{build_dir}}/kernel.o {{build_dir}}/userland.o {{build_dir}}/gdt.o {{build_dir}}/idt.o {{build_dir}}/gfx.o {{build_dir}}/keyboard.o {{build_dir}}/mouse.o {{build_dir}}/pit.o {{build_dir}}/speaker.o {{build_dir}}/dma.o {{build_dir}}/pci.o {{build_dir}}/rtl8139.o {{build_dir}}/sb16.o {{build_dir}}/serial.o {{build_dir}}/ata.o {{build_dir}}/ramdisk.o {{build_dir}}/netif.o {{build_dir}}/ethernet.o {{build_dir}}/arp.o {{build_dir}}/ip.o {{build_dir}}/icmp.o {{build_dir}}/udp.o {{build_dir}}/dhcp.o {{build_dir}}/dns.o {{build_dir}}/tcp.o {{build_dir}}/http.o {{build_dir}}/net.o {{build_dir}}/audio.o {{build_dir}}/synth.o {{build_dir}}/blkdev.o {{build_dir}}/mbr.o {{build_dir}}/fat32.o {{build_dir}}/fat32_format.o {{build_dir}}/vfs.o {{build_dir}}/icon_assets.o {{build_dir}}/cursor_assets.o {{build_dir}}/desktop.o $(for src in apps/*.c; do printf '%s/%s.o ' {{build_dir}} "$(basename "${src%.c}")"; done) {{build_dir}}/kshell.o {{build_dir}}/pmm.o {{build_dir}}/vmm.o {{build_dir}}/paging.o {{build_dir}}/vm.o {{build_dir}}/interrupt.o
+    ld -m elf_i386 -T linker/linker.ld -o {{build_dir}}/coffeeos.elf {{build_dir}}/boot.o {{build_dir}}/kernel.o {{build_dir}}/process.o {{build_dir}}/userland.o {{build_dir}}/gdt.o {{build_dir}}/idt.o {{build_dir}}/panic.o {{build_dir}}/gfx.o {{build_dir}}/keyboard.o {{build_dir}}/mouse.o {{build_dir}}/pit.o {{build_dir}}/speaker.o {{build_dir}}/dma.o {{build_dir}}/pci.o {{build_dir}}/rtl8139.o {{build_dir}}/sb16.o {{build_dir}}/serial.o {{build_dir}}/ata.o {{build_dir}}/ramdisk.o {{build_dir}}/netif.o {{build_dir}}/ethernet.o {{build_dir}}/arp.o {{build_dir}}/ip.o {{build_dir}}/icmp.o {{build_dir}}/udp.o {{build_dir}}/dhcp.o {{build_dir}}/dns.o {{build_dir}}/tcp.o {{build_dir}}/http.o {{build_dir}}/net.o {{build_dir}}/audio.o {{build_dir}}/synth.o {{build_dir}}/blkdev.o {{build_dir}}/mbr.o {{build_dir}}/fat32.o {{build_dir}}/fat32_format.o {{build_dir}}/vfs.o {{build_dir}}/icon_assets.o {{build_dir}}/cursor_assets.o {{build_dir}}/boot_logo_asset.o {{build_dir}}/boot_animation.o {{build_dir}}/desktop.o $(for src in apps/*.c; do printf '%s/%s.o ' {{build_dir}} "$(basename "${src%.c}")"; done) {{build_dir}}/kshell.o {{build_dir}}/pmm.o {{build_dir}}/vmm.o {{build_dir}}/paging.o {{build_dir}}/vm.o {{build_dir}}/interrupt.o
 
 disk:
     python3 tools/make_disk.py {{build_dir}}/disk.img 16

@@ -4,6 +4,7 @@
 #include "gfx.h"
 #include "multiboot.h"
 #include "pmm.h"
+#include "process.h"
 #include "serial.h"
 #include "userland.h"
 #include "vmm.h"
@@ -16,7 +17,6 @@
 #define PF_X 1u
 #define PF_W 2u
 
-static struct UserlandResumeContext userland_resume_context;
 static uint32_t userland_boot_info_addr;
 static uint32_t userland_kernel_page_directory_phys;
 static int userland_running;
@@ -108,7 +108,9 @@ int userland_active(void) {
 }
 
 void userland_return_from_syscall(uint32_t exit_code) {
-    if (!userland_running) {
+    struct Process *process = process_current();
+
+    if (!userland_running || process == (struct Process *)0) {
         gfx_print("\n[user] exit requested with no active userland session\n");
         for (;;) {
             __asm__ volatile ("cli; hlt");
@@ -116,9 +118,28 @@ void userland_return_from_syscall(uint32_t exit_code) {
     }
 
     userland_running = 0;
-    vmm_switch_page_directory(userland_kernel_page_directory_phys);
+    process_mark_exited(process, exit_code);
+    process_switch_to_kernel();
     __asm__ volatile ("sti");
-    userland_resume(exit_code, &userland_resume_context);
+    userland_resume(exit_code, &process->resume_context);
+
+    for (;;) {
+        __asm__ volatile ("cli; hlt");
+    }
+}
+
+void userland_fault_current_process(uint32_t fault_code) {
+    struct Process *process = process_current();
+
+    if (process == (struct Process *)0) {
+        return;
+    }
+
+    userland_running = 0;
+    process_mark_faulted(process, fault_code);
+    process_switch_to_kernel();
+    __asm__ volatile ("sti");
+    userland_resume(fault_code, &process->resume_context);
 
     for (;;) {
         __asm__ volatile ("cli; hlt");
@@ -136,6 +157,7 @@ void userland_start(uint32_t multiboot_info_addr) {
     uint32_t entry;
     uint32_t i;
     int exit_code;
+    struct Process *process;
 
     if (multiboot_info_addr != 0u) {
         userland_boot_info_addr = multiboot_info_addr;
@@ -254,15 +276,30 @@ void userland_start(uint32_t multiboot_info_addr) {
         }
     }
 
-    gfx_print("Userland loaded. Entering ring 3...\n");
-    serial_print("[coffeeOS] userland: entering ring3\n");
+    process = process_create(user_pd_phys, entry, USER_STACK_TOP);
+    if (process == (struct Process *)0) {
+        gfx_print("Failed to create process.\n");
+        serial_print("[coffeeOS] userland: process table full\n");
+        vmm_switch_page_directory(userland_kernel_page_directory_phys);
+        return;
+    }
+
+    gfx_print("Userland loaded. Entering ring 3 pid=");
+    gfx_write_hex(process->pid);
+    gfx_print("...\n");
+    serial_print("[coffeeOS] userland: entering ring3 pid=");
+    serial_write_hex(process->pid);
+    serial_print("\n");
 
     userland_running = 1;
-    exit_code = userland_enter(entry, USER_STACK_TOP, &userland_resume_context);
+    process_switch_to(process);
+    exit_code = userland_enter(process->user_entry, process->user_stack_top, &process->resume_context);
     userland_running = 0;
-    vmm_switch_page_directory(userland_kernel_page_directory_phys);
+    process_switch_to_kernel();
 
-    if (exit_code == 1) {
+    if (process->state == PROCESS_FAULTED) {
+        gfx_print("[user] process faulted; returning to desktop\n");
+    } else if (exit_code == 1) {
         gfx_print("[user] kernel requested; returning to desktop\n");
     } else {
         gfx_print("[user] exit; returning to desktop\n");

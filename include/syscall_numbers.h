@@ -32,7 +32,9 @@ enum {
     SYS_TCP_SEND = 27,
     SYS_TCP_RECV = 28,
     SYS_TCP_CLOSE = 29,
-    SYS_NET_STAT = 30
+    SYS_NET_STAT = 30,
+    SYS_GETPID = 31,
+    SYS_YIELD = 32
 };
 
 #endif

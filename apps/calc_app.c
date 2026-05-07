@@ -81,6 +81,7 @@ static int calc_client_y;
 static int calc_client_w;
 static int calc_client_h;
 static int calc_hover_index;
+static uint32_t calc_flash_until;
 
 static const struct CalcButton calc_buttons[] = {
     {CALC_PADDING, CALC_GRID_TOP, CALC_BUTTON_W, CALC_BUTTON_H, "AC", 27, CALC_BUTTON_FUNCTION, CALC_OPERATOR_NONE},
@@ -110,20 +111,6 @@ static const struct CalcButton calc_buttons[] = {
 
 static int calc_is_digit(char c) {
     return c >= '0' && c <= '9';
-}
-
-static void calc_copy_string(char *dst, int dst_len, const char *src) {
-    int i = 0;
-
-    if (dst_len <= 0) {
-        return;
-    }
-
-    while (src[i] != '\0' && i + 1 < dst_len) {
-        dst[i] = src[i];
-        i++;
-    }
-    dst[i] = '\0';
 }
 
 static double calc_parse_display_value(void) {
@@ -161,7 +148,7 @@ static double calc_parse_display_value(void) {
 }
 
 static void calc_set_error_text(const char *text) {
-    calc_copy_string(display, CALC_DISPLAY_BUFFER_LEN, text);
+    app_copy_string(display, CALC_DISPLAY_BUFFER_LEN, text);
     error = 1;
     input_mode = 0;
     pending_op = 0;
@@ -178,36 +165,6 @@ static void calc_trim_fraction(char *buf) {
     if (len > 0 && buf[len - 1] == '.') {
         buf[len - 1] = '\0';
     }
-}
-
-static void calc_append_u32(char *buf, int buf_len, uint32_t value) {
-    char digits[10];
-    int count = 0;
-    int i;
-    int len = (int)ascii_strlen(buf);
-
-    if (len >= buf_len - 1) {
-        return;
-    }
-
-    if (value == 0u) {
-        buf[len] = '0';
-        buf[len + 1] = '\0';
-        return;
-    }
-
-    while (value > 0u && count < (int)(sizeof(digits) / sizeof(digits[0]))) {
-        digits[count++] = (char)('0' + (value % 10u));
-        value /= 10u;
-    }
-
-    for (i = count - 1; i >= 0; i--) {
-        if (len >= buf_len - 1) {
-            break;
-        }
-        buf[len++] = digits[i];
-    }
-    buf[len] = '\0';
 }
 
 /* 6dp is fine for now */
@@ -233,9 +190,9 @@ static int calc_double_to_str(double value, char out[CALC_DISPLAY_BUFFER_LEN]) {
     frac = value - (double)int_part;
 
     if (negative) {
-        calc_copy_string(out, CALC_DISPLAY_BUFFER_LEN, "-");
+        app_copy_string(out, CALC_DISPLAY_BUFFER_LEN, "-");
     }
-    calc_append_u32(out, CALC_DISPLAY_BUFFER_LEN, int_part);
+    app_append_u32(out, CALC_DISPLAY_BUFFER_LEN, int_part);
 
     frac_scaled = (uint32_t)(frac * 1000000.0 + 0.5);
     if (frac_scaled >= 1000000u) {
@@ -283,7 +240,7 @@ static int calc_double_to_str(double value, char out[CALC_DISPLAY_BUFFER_LEN]) {
         frac_buf[6] = (char)('0' + (frac_scaled % 10u));
         frac_buf[7] = '\0';
 
-        calc_copy_string(out + ascii_strlen(out),
+        app_copy_string(out + ascii_strlen(out),
                          CALC_DISPLAY_BUFFER_LEN - (int)ascii_strlen(out),
                          frac_buf);
         calc_trim_fraction(out);
@@ -300,7 +257,7 @@ static void calc_set_display_from_double(double value) {
         calc_set_error_text("Overflow");
         return;
     }
-    calc_copy_string(display, CALC_DISPLAY_BUFFER_LEN, next);
+    app_copy_string(display, CALC_DISPLAY_BUFFER_LEN, next);
     error = 0;
 }
 
@@ -342,14 +299,14 @@ static void calc_all_clear(void) {
     pending_op = 0;
     last_op = 0;
     last_operand = 0.0;
-    calc_copy_string(display, CALC_DISPLAY_BUFFER_LEN, "0");
+    app_copy_string(display, CALC_DISPLAY_BUFFER_LEN, "0");
     input_mode = 1;
     error = 0;
     operator_active = CALC_OPERATOR_NONE;
 }
 
 static void calc_clear_entry(void) {
-    calc_copy_string(display, CALC_DISPLAY_BUFFER_LEN, "0");
+    app_copy_string(display, CALC_DISPLAY_BUFFER_LEN, "0");
     input_mode = 1;
     error = 0;
 }
@@ -363,7 +320,7 @@ static void calc_prepare_for_numeric_input(void) {
             last_op = 0;
             last_operand = 0.0;
         }
-        calc_copy_string(display, CALC_DISPLAY_BUFFER_LEN, "0");
+        app_copy_string(display, CALC_DISPLAY_BUFFER_LEN, "0");
         input_mode = 1;
     }
 }
@@ -454,13 +411,13 @@ static void calc_backspace(void) {
 
     len = (int)ascii_strlen(display);
     if (len <= 1) {
-        calc_copy_string(display, CALC_DISPLAY_BUFFER_LEN, "0");
+        app_copy_string(display, CALC_DISPLAY_BUFFER_LEN, "0");
         return;
     }
 
     display[len - 1] = '\0';
     if (ascii_streq(display, "-")) {
-        calc_copy_string(display, CALC_DISPLAY_BUFFER_LEN, "0");
+        app_copy_string(display, CALC_DISPLAY_BUFFER_LEN, "0");
     }
 }
 
@@ -566,6 +523,8 @@ static int calc_hit_test_button(int x, int y) {
 }
 
 static void calc_handle_action(char action) {
+    calc_flash_until = app_ticks() + 10u;
+
     if (action >= '0' && action <= '9') {
         calc_input_digit(action);
         return;
@@ -607,7 +566,7 @@ static void calc_handle_action(char action) {
 static void calc_draw_button(const struct CalcButton *button, int hovered) {
     uint32_t bg = CALC_COLOR_NUMBER;
     uint32_t fg = CALC_COLOR_TEXT_LIGHT;
-    int text_w = (int)ascii_strlen(button->label) * 8;
+    int text_w = app_text_width(button->label);
     int text_x;
     int text_y;
 
@@ -630,13 +589,10 @@ static void calc_draw_button(const struct CalcButton *button, int hovered) {
     }
 
     app_draw_rect(button->x, button->y, button->w, button->h, bg);
-    app_draw_hline(button->x, button->y, button->w, 0x000000u);
-    app_draw_hline(button->x, button->y + button->h - 1, button->w, 0x000000u);
-    app_draw_vline(button->x, button->y, button->h, 0x000000u);
-    app_draw_vline(button->x + button->w - 1, button->y, button->h, 0x000000u);
+    app_draw_border(button->x, button->y, button->w, button->h, 0x000000u);
 
     text_x = button->x + (button->w - text_w) / 2;
-    text_y = button->y + (button->h - 16) / 2;
+    text_y = button->y + (button->h - APP_FONT_HEIGHT) / 2;
     app_draw_string(text_x, text_y, button->label, fg, bg);
 }
 
@@ -644,19 +600,28 @@ static void calc_draw_display(void) {
     int display_w = calc_client_w - (CALC_PADDING * 2);
     int text_len = (int)ascii_strlen(display);
     int text_x;
-    int text_y = CALC_PADDING + ((CALC_DISPLAY_H - 16) / 2);
+    int text_y = CALC_PADDING + ((CALC_DISPLAY_H - APP_FONT_HEIGHT) / 2);
+    uint32_t display_bg = CALC_COLOR_DISPLAY_BG;
+    uint32_t border = 0x111111u;
 
     if (display_w < 1) {
         return;
     }
 
-    text_x = CALC_PADDING + display_w - CALC_PADDING - (text_len * 8);
+    if ((int32_t)(calc_flash_until - app_ticks()) > 0) {
+        uint32_t remaining = calc_flash_until - app_ticks();
+        display_bg = app_blend_color(CALC_COLOR_DISPLAY_BG, 0x3B3328u, remaining, 10u);
+        border = CALC_COLOR_OPERATOR;
+    }
+
+    text_x = CALC_PADDING + display_w - CALC_PADDING - (text_len * APP_FONT_WIDTH);
     if (text_x < CALC_PADDING + 4) {
         text_x = CALC_PADDING + 4;
     }
 
-    app_draw_rect(CALC_PADDING, CALC_PADDING, display_w, CALC_DISPLAY_H, CALC_COLOR_DISPLAY_BG);
-    app_draw_string(text_x, text_y, display, CALC_COLOR_DISPLAY_TEXT, CALC_COLOR_DISPLAY_BG);
+    app_draw_rect(CALC_PADDING, CALC_PADDING, display_w, CALC_DISPLAY_H, display_bg);
+    app_draw_border(CALC_PADDING, CALC_PADDING, display_w, CALC_DISPLAY_H, border);
+    app_draw_string(text_x, text_y, display, CALC_COLOR_DISPLAY_TEXT, display_bg);
 }
 
 /* todo: cache button layout if this grows */
@@ -708,6 +673,7 @@ static void calc_on_init(void) {
     calc_client_w = 0;
     calc_client_h = 0;
     calc_hover_index = -1;
+    calc_flash_until = 0u;
     calc_all_clear();
 }
 
@@ -722,5 +688,9 @@ App calc_app = {
     .on_draw = calc_on_draw,
     .on_key = calc_on_key,
     .on_click = calc_on_click,
-    .on_close = 0
+    .on_close = 0,
+    .id = "calculator",
+    .flags = APP_FLAG_SINGLE_INSTANCE | APP_FLAG_RESIZABLE | APP_FLAG_ANIMATED,
+    .min_w = 246,
+    .min_h = 329
 };

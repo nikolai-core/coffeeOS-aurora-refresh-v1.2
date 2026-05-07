@@ -7,8 +7,8 @@
 #include "vfs.h"
 
 #define NOTEPAD_MAX_CHARS  4096
-#define NOTEPAD_FONT_W     8
-#define NOTEPAD_FONT_H     16
+#define NOTEPAD_FONT_W     APP_FONT_WIDTH
+#define NOTEPAD_FONT_H     APP_FONT_HEIGHT
 #define NOTEPAD_PADDING    4
 #define NOTEPAD_STATUS_H   22
 
@@ -303,6 +303,10 @@ static void notepad_on_draw(int win_x, int win_y, int win_w, int win_h) {
     notepad_clamp_scroll();
 
     app_clear(NOTEPAD_BG);
+    if (notepad_dirty) {
+        uint32_t pulse = (uint32_t)app_anim_pingpong(120u, 32);
+        app_draw_hline(0, 0, win_w, app_blend_color(NOTEPAD_BG, NOTEPAD_CURSOR_BG, pulse, 32u));
+    }
     col = 0;
     row = 0;
     cursor_drawn = 0;
@@ -320,7 +324,7 @@ static void notepad_on_draw(int win_x, int win_y, int win_w, int win_h) {
             px = NOTEPAD_PADDING + col * NOTEPAD_FONT_W;
             py = NOTEPAD_PADDING + visible_row * NOTEPAD_FONT_H;
 
-            if (draw_cursor && !cursor_drawn) {
+            if (draw_cursor && !cursor_drawn && ((app_ticks() / 35u) & 1u) == 0u) {
                 char cur_char_str[2];
 
                 cur_char_str[0] = ' ';
@@ -372,7 +376,9 @@ static void notepad_on_draw(int win_x, int win_y, int win_w, int win_h) {
     }
 
     if (notepad_save_flash > 0) {
-        app_draw_string(win_w - 56, 6, "Saved.", NOTEPAD_FLASH_OK, NOTEPAD_BG);
+        uint32_t flash_bg = app_blend_color(NOTEPAD_BG, 0x23322Cu, (uint32_t)notepad_save_flash, 60u);
+        app_draw_rect(win_w - 64, 4, 58, 18, flash_bg);
+        app_draw_string(win_w - 56, 6, "Saved.", NOTEPAD_FLASH_OK, flash_bg);
         notepad_save_flash--;
     }
 
@@ -504,15 +510,19 @@ static void notepad_on_close(void) {
 }
 
 App notepad_app = {
-    "Notepad",
-    100,
-    80,
-    500,
-    340,
-    0x1E2228u,
-    notepad_on_init,
-    notepad_on_draw,
-    notepad_on_key,
-    notepad_on_click,
-    notepad_on_close
+    .title = "Notepad",
+    .x = 100,
+    .y = 80,
+    .w = 500,
+    .h = 340,
+    .bg_color = 0x1E2228u,
+    .on_init = notepad_on_init,
+    .on_draw = notepad_on_draw,
+    .on_key = notepad_on_key,
+    .on_click = notepad_on_click,
+    .on_close = notepad_on_close,
+    .id = "notepad",
+    .flags = APP_FLAG_SINGLE_INSTANCE | APP_FLAG_RESIZABLE | APP_FLAG_ANIMATED,
+    .min_w = 320,
+    .min_h = 220
 };

@@ -64,8 +64,14 @@ int vmm_user_range_accessible(uint32_t *page_directory, uint32_t addr, uint32_t 
     if (len == 0u) {
         return 1;
     }
+    if (addr >= 0xC0000000u) {
+        return 0;
+    }
 
     end = addr + len - 1u;
+    if (end < addr || end >= 0xC0000000u) {
+        return 0;
+    }
     a = addr & 0xFFFFF000u;
 
     while (1) {
@@ -100,4 +106,3 @@ uint32_t vmm_get_cr3(void) {
 int vmm_is_paging_enabled(void) {
     return ((read_cr0() >> 31) & 1u) != 0u;
 }
-

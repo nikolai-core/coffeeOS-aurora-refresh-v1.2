@@ -109,9 +109,19 @@ static void vfs_lfn_decode(const Fat32LFNEntry *lfn, char *name) {
     uint32_t base = ((lfn->order & 0x1Fu) - 1u) * 13u;
     uint32_t pos = base;
     uint32_t i;
-    const uint16_t *parts[3] = {lfn->name1, lfn->name2, lfn->name3};
+    uint16_t name1[5];
+    uint16_t name2[6];
+    uint16_t name3[2];
+    const uint16_t *parts[3];
     const uint32_t sizes[3] = {5u, 6u, 2u};
     uint32_t group;
+
+    vfs_memcpy(name1, lfn->name1, sizeof(name1));
+    vfs_memcpy(name2, lfn->name2, sizeof(name2));
+    vfs_memcpy(name3, lfn->name3, sizeof(name3));
+    parts[0] = name1;
+    parts[1] = name2;
+    parts[2] = name3;
 
     for (group = 0u; group < 3u; group++) {
         for (i = 0u; i < sizes[group]; i++) {

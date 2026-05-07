@@ -2,29 +2,34 @@
 
 coffeeOS Aurora Refresh v1.4.0 is a 32-bit x86 hobby operating system built in freestanding C and x86 assembly. It boots through Multiboot, initializes a higher-half kernel, brings up paging and interrupts, mounts FAT32 storage, and launches a custom desktop environment with a dirty-rectangle framebuffer compositor, PS/2 input, RTL8139 networking, SB16 audio, and built-in productivity apps.
 
-> v1.4.0 is the current documentation refresh and maintenance release for the Aurora Refresh tree. Its most important user-visible fix is the desktop cursor ghost/imprint repair in the compositor path.
+> v1.4.0 is the current documentation refresh and maintenance release for the Aurora Refresh tree. Its most important user-visible fix is the desktop cursor ghost/imprint repair in the compositor path. This release also adds kernel panic debugging, process isolation via CR3 switching, and new syscalls.
 
 ## At a glance
 
 | Area | Current state |
 | --- | --- |
-| Kernel | 32-bit x86, higher-half, freestanding, Multiboot |
+| Kernel | 32-bit x86, higher-half, freestanding, Multiboot, per-process CR3 isolation |
+| Process Model | Per-process page directories, TSS-based kernel stacks, userland syscall boundary |
 | Graphics | Backbuffer compositor with dirty-rect present and software cursor compositing |
 | Desktop | Window manager, taskbar, icons, start menu, terminal, clock, system info |
 | Storage | Block device layer, MBR parsing, FAT32, VFS, ramdisk and ATA workflows |
 | Networking | RTL8139 path with Ethernet, ARP, IPv4, ICMP, UDP, DHCP, DNS, TCP, HTTP |
 | Audio | SB16 output with PC speaker support paths |
 | Apps | Hello App, Calculator, Files, Notepad, Paint, Audio Mixer, Network Monitor |
+| Debugging | Kernel panic handler with register dumps, stack traces, process state |
 
 ## Highlights
 
 - Higher-half 32-bit x86 kernel with GDT, IDT, paging, PMM, and VMM layers
+- Process isolation with per-process CR3 page directories and TSS kernel stack switching
+- Syscall layer with SYS_GETPID, SYS_YIELD, and full file/network API
 - Framebuffer desktop with movable windows, icons, built-in tools, and a GUI terminal
 - Dirty-rectangle compositor with explicit cursor save, erase, redraw, and present sequencing
-- FAT32 filesystem with VFS dispatch, ramdisk boot media support, and ATA-backed persistence
+- FAT32 filesystem with safe LFN decoding (no packed struct pointer aliasing)
 - RTL8139 networking stack with DHCP, DNS, TCP, UDP, and HTTP support
 - SB16 audio path plus speaker support for simple fallback output
 - App registry model that builds every `apps/*.c` translation unit automatically
+- Kernel panic debugger with register/state dumps and stack traces
 
 ## What changed in v1.4.0
 
@@ -191,4 +196,4 @@ Desktop-managed windows such as Terminal, Clock, and System Info are part of the
 - `just run-persist` is the standard workflow for filesystem testing across QEMU sessions
 - `just run-persist-audio` adds SB16 device setup on top of the same persistent networked environment
 - Both persistent run targets attach the RTL8139 NIC with QEMU user networking
-- Existing packed-member warnings in FAT32 LFN decoding are known and documented in the current codebase
+- Kernel panic output goes to both serial debug port and the graphical framebuffer
